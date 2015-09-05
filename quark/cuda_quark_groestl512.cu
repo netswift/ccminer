@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <memory.h>
+#include <sys/types.h> // off_t
 
 #include "cuda_helper.h"
 
@@ -9,18 +10,18 @@
 #define THF 4
 
 #if __CUDA_ARCH__ >= 300
-#include "groestl_functions_quad.cu"
-#include "bitslice_transformations_quad.cu"
+#include "quark/groestl_functions_quad.h"
+#include "quark/groestl_transf_quad.h"
 #endif
 
 #include "quark/cuda_quark_groestl512_sm20.cu"
 
 __global__ __launch_bounds__(TPB, THF)
-void quark_groestl512_gpu_hash_64_quad(int threads, uint32_t startNounce, uint32_t * __restrict g_hash, uint32_t * __restrict g_nonceVector)
+void quark_groestl512_gpu_hash_64_quad(uint32_t threads, uint32_t startNounce, uint32_t * __restrict g_hash, uint32_t * __restrict g_nonceVector)
 {
 #if __CUDA_ARCH__ >= 300
     // durch 4 dividieren, weil jeweils 4 Threads zusammen ein Hash berechnen
-    int thread = (blockDim.x * blockIdx.x + threadIdx.x) >> 2;
+    uint32_t thread = (blockDim.x * blockIdx.x + threadIdx.x) >> 2;
     if (thread < threads)
     {
         // GROESTL
@@ -28,19 +29,19 @@ void quark_groestl512_gpu_hash_64_quad(int threads, uint32_t startNounce, uint32
         uint32_t state[8];
 
         uint32_t nounce = g_nonceVector ? g_nonceVector[thread] : (startNounce + thread);
-        int hashPosition = nounce - startNounce;
-        uint32_t *inpHash = &g_hash[hashPosition << 4];
+        off_t hashPosition = nounce - startNounce;
+        uint32_t *pHash = &g_hash[hashPosition << 4];
 
-        const uint16_t thr = threadIdx.x % THF;
+        const uint32_t thr = threadIdx.x % THF;
 
         #pragma unroll
-        for(int k=0;k<4;k++) message[k] = inpHash[(k * THF) + thr];
+        for(int k=0;k<4;k++) message[k] = pHash[thr + (k * THF)];
 
         #pragma unroll
         for(int k=4;k<8;k++) message[k] = 0;
 
-        if (thr == 0) message[4] = 0x80;
-        if (thr == 3) message[7] = 0x01000000;
+        if (thr == 0) message[4] = 0x80U;
+        if (thr == 3) message[7] = 0x01000000U;
 
         uint32_t msgBitsliced[8];
         to_bitslice_quad(message, msgBitsliced);
@@ -48,24 +49,33 @@ void quark_groestl512_gpu_hash_64_quad(int threads, uint32_t startNounce, uint32
         groestl512_progressMessage_quad(state, msgBitsliced);
 
         // Nur der erste von jeweils 4 Threads bekommt das Ergebns-Hash
-        uint32_t *outpHash = inpHash;
         uint32_t hash[16];
         from_bitslice_quad(state, hash);
 
-        if (thr == 0)
-        {
+        // uint4 = 4x4 uint32_t = 16 bytes
+        if (thr == 0) {
+            uint4 *phash = (uint4*) hash;
+            uint4 *outpt = (uint4*) pHash;
+            outpt[0] = phash[0];
+            outpt[1] = phash[1];
+            outpt[2] = phash[2];
+            outpt[3] = phash[3];
+        }
+/*
+        if (thr == 0) {
             #pragma unroll
             for(int k=0;k<16;k++) outpHash[k] = hash[k];
         }
+*/
     }
 #endif
 }
 
 __global__ void __launch_bounds__(TPB, THF)
- quark_doublegroestl512_gpu_hash_64_quad(int threads, uint32_t startNounce, uint32_t *g_hash, uint32_t *g_nonceVector)
+ quark_doublegroestl512_gpu_hash_64_quad(uint32_t threads, uint32_t startNounce, uint32_t *g_hash, uint32_t *g_nonceVector)
 {
 #if __CUDA_ARCH__ >= 300
-    int thread = (blockDim.x * blockIdx.x + threadIdx.x)>>2;
+    uint32_t thread = (blockDim.x * blockIdx.x + threadIdx.x)>>2;
     if (thread < threads)
     {
         // GROESTL
@@ -74,7 +84,7 @@ __global__ void __launch_bounds__(TPB, THF)
 
         uint32_t nounce = g_nonceVector ? g_nonceVector[thread] : (startNounce + thread);
 
-        int hashPosition = nounce - startNounce;
+        off_t hashPosition = nounce - startNounce;
         uint32_t * inpHash = &g_hash[hashPosition<<4];
         const uint16_t thr = threadIdx.x % THF;
 
@@ -122,15 +132,17 @@ __global__ void __launch_bounds__(TPB, THF)
 #endif
 }
 
-
-
-__host__ void quark_groestl512_cpu_init(int thr_id, int threads)
+__host__
+void quark_groestl512_cpu_init(int thr_id, uint32_t threads)
 {
-    if (device_sm[device_map[thr_id]] < 300)
+    int dev_id = device_map[thr_id];
+    cuda_get_arch(thr_id);
+    if (device_sm[dev_id] < 300 || cuda_arch[dev_id] < 300)
         quark_groestl512_sm20_init(thr_id, threads);
 }
 
-__host__ void quark_groestl512_cpu_hash_64(int thr_id, int threads, uint32_t startNounce, uint32_t *d_nonceVector, uint32_t *d_hash, int order)
+__host__
+void quark_groestl512_cpu_hash_64(int thr_id, uint32_t threads, uint32_t startNounce, uint32_t *d_nonceVector, uint32_t *d_hash, int order)
 {
     int threadsperblock = TPB;
 
@@ -142,11 +154,10 @@ __host__ void quark_groestl512_cpu_hash_64(int thr_id, int threads, uint32_t sta
     dim3 grid(factor*((threads + threadsperblock-1)/threadsperblock));
     dim3 block(threadsperblock);
 
-    // Größe des dynamischen Shared Memory Bereichs
-    size_t shared_size = 0;
+    int dev_id = device_map[thr_id];
 
-    if (device_sm[device_map[thr_id]] >= 300)
-        quark_groestl512_gpu_hash_64_quad<<<grid, block, shared_size>>>(threads, startNounce, d_hash, d_nonceVector);
+    if (device_sm[dev_id] >= 300 && cuda_arch[dev_id] >= 300)
+        quark_groestl512_gpu_hash_64_quad<<<grid, block>>>(threads, startNounce, d_hash, d_nonceVector);
     else
         quark_groestl512_sm20_hash_64(thr_id, threads, startNounce, d_nonceVector, d_hash, order);
 
@@ -154,7 +165,8 @@ __host__ void quark_groestl512_cpu_hash_64(int thr_id, int threads, uint32_t sta
     MyStreamSynchronize(NULL, order, thr_id);
 }
 
-__host__ void quark_doublegroestl512_cpu_hash_64(int thr_id, int threads, uint32_t startNounce, uint32_t *d_nonceVector, uint32_t *d_hash, int order)
+__host__
+void quark_doublegroestl512_cpu_hash_64(int thr_id, uint32_t threads, uint32_t startNounce, uint32_t *d_nonceVector, uint32_t *d_hash, int order)
 {
     const int factor = THF;
     int threadsperblock = TPB;
@@ -162,10 +174,10 @@ __host__ void quark_doublegroestl512_cpu_hash_64(int thr_id, int threads, uint32
     dim3 grid(factor*((threads + threadsperblock-1)/threadsperblock));
     dim3 block(threadsperblock);
 
-    size_t shared_size = 0;
+    int dev_id = device_map[thr_id];
 
-    if (device_sm[device_map[thr_id]] >= 300)
-        quark_doublegroestl512_gpu_hash_64_quad<<<grid, block, shared_size>>>(threads, startNounce, d_hash, d_nonceVector);
+    if (device_sm[dev_id] >= 300 && cuda_arch[dev_id] >= 300)
+        quark_doublegroestl512_gpu_hash_64_quad<<<grid, block>>>(threads, startNounce, d_hash, d_nonceVector);
     else
         quark_doublegroestl512_sm20_hash_64(thr_id, threads, startNounce, d_nonceVector, d_hash, order);
 

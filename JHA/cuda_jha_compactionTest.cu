@@ -4,6 +4,10 @@
 #include "cuda_helper.h"
 #include <sm_30_intrinsics.h>
 
+#ifdef __INTELLISENSE__
+#define __shfl_up(a,b)
+#endif
+
 static uint32_t *d_tempBranch1Nonces[MAX_GPUS];
 static uint32_t *d_numValid[MAX_GPUS];
 static uint32_t *h_numValid[MAX_GPUS];
@@ -30,7 +34,7 @@ __device__ cuda_compactTestFunction_t d_JackpotTrueFunction = JackpotTrueTest, d
 cuda_compactTestFunction_t h_JackpotTrueFunction[MAX_GPUS], h_JackpotFalseFunction[MAX_GPUS];
 
 // Setup-Funktionen
-__host__ void jackpot_compactTest_cpu_init(int thr_id, int threads)
+__host__ void jackpot_compactTest_cpu_init(int thr_id, uint32_t threads)
 {
 	cudaMemcpyFromSymbol(&h_JackpotTrueFunction[thr_id], d_JackpotTrueFunction, sizeof(cuda_compactTestFunction_t));
 	cudaMemcpyFromSymbol(&h_JackpotFalseFunction[thr_id], d_JackpotFalseFunction, sizeof(cuda_compactTestFunction_t));
@@ -56,7 +60,9 @@ __host__ void jackpot_compactTest_cpu_init(int thr_id, int threads)
 #endif
 
 // Die Summenfunktion (vom NVIDIA SDK)
-__global__ void jackpot_compactTest_gpu_SCAN(uint32_t *data, int width, uint32_t *partial_sums=NULL, cuda_compactTestFunction_t testFunc=NULL, int threads=0, uint32_t startNounce=0, uint32_t *inpHashes=NULL, uint32_t *d_validNonceTable=NULL)
+__global__
+void jackpot_compactTest_gpu_SCAN(uint32_t *data, int width, uint32_t *partial_sums=NULL, cuda_compactTestFunction_t testFunc=NULL,
+	uint32_t threads=0, uint32_t startNounce=0, uint32_t *inpHashes=NULL, uint32_t *d_validNonceTable=NULL)
 {
 	extern __shared__ uint32_t sums[];
 	int id = ((blockIdx.x * blockDim.x) + threadIdx.x);
@@ -168,7 +174,8 @@ __global__ void jackpot_compactTest_gpu_SCAN(uint32_t *data, int width, uint32_t
 }
 
 // Uniform add: add partial sums array
-__global__ void jackpot_compactTest_gpu_ADD(uint32_t *data, uint32_t *partial_sums, int len)
+__global__
+void jackpot_compactTest_gpu_ADD(uint32_t *data, uint32_t *partial_sums, int len)
 {
 	__shared__ uint32_t buf;
 	int id = ((blockIdx.x * blockDim.x) + threadIdx.x);
@@ -185,7 +192,9 @@ __global__ void jackpot_compactTest_gpu_ADD(uint32_t *data, uint32_t *partial_su
 }
 
 // Der Scatter
-__global__ void jackpot_compactTest_gpu_SCATTER(uint32_t *sum, uint32_t *outp, cuda_compactTestFunction_t testFunc, int threads=0, uint32_t startNounce=0, uint32_t *inpHashes=NULL, uint32_t *d_validNonceTable=NULL)
+__global__
+void jackpot_compactTest_gpu_SCATTER(uint32_t *sum, uint32_t *outp, cuda_compactTestFunction_t testFunc,
+	uint32_t threads=0, uint32_t startNounce=0, uint32_t *inpHashes=NULL, uint32_t *d_validNonceTable=NULL)
 {
 	int id = ((blockIdx.x * blockDim.x) + threadIdx.x);
 	uint32_t actNounce = id;
@@ -220,7 +229,8 @@ __global__ void jackpot_compactTest_gpu_SCATTER(uint32_t *sum, uint32_t *outp, c
 	}
 }
 
-__host__ static uint32_t jackpot_compactTest_roundUpExp(uint32_t val)
+__host__
+static uint32_t jackpot_compactTest_roundUpExp(uint32_t val)
 {
 	if(val == 0)
 		return 0;
@@ -234,9 +244,9 @@ __host__ static uint32_t jackpot_compactTest_roundUpExp(uint32_t val)
 	return mask;
 }
 
-__host__ void jackpot_compactTest_cpu_singleCompaction(int thr_id, int threads, uint32_t *nrm,
-														uint32_t *d_nonces1, cuda_compactTestFunction_t function,
-														uint32_t startNounce, uint32_t *inpHashes, uint32_t *d_validNonceTable)
+__host__
+void jackpot_compactTest_cpu_singleCompaction(int thr_id, uint32_t threads, uint32_t *nrm, uint32_t *d_nonces1,
+	cuda_compactTestFunction_t function, uint32_t startNounce, uint32_t *inpHashes, uint32_t *d_validNonceTable)
 {
 	int orgThreads = threads;
 	threads = (int)jackpot_compactTest_roundUpExp((uint32_t)threads);
@@ -290,9 +300,9 @@ __host__ void jackpot_compactTest_cpu_singleCompaction(int thr_id, int threads, 
 }
 
 ////// ACHTUNG: Diese funktion geht aktuell nur mit threads > 65536 (Am besten 256 * 1024 oder 256*2048)
-__host__ void jackpot_compactTest_cpu_dualCompaction(int thr_id, int threads, uint32_t *nrm,
-													 uint32_t *d_nonces1, uint32_t *d_nonces2,
-													 uint32_t startNounce, uint32_t *inpHashes, uint32_t *d_validNonceTable)
+__host__
+void jackpot_compactTest_cpu_dualCompaction(int thr_id, uint32_t threads, uint32_t *nrm, uint32_t *d_nonces1,
+	uint32_t *d_nonces2, uint32_t startNounce, uint32_t *inpHashes, uint32_t *d_validNonceTable)
 {
 	jackpot_compactTest_cpu_singleCompaction(thr_id, threads, &nrm[0], d_nonces1, h_JackpotTrueFunction[thr_id], startNounce, inpHashes, d_validNonceTable);
 	jackpot_compactTest_cpu_singleCompaction(thr_id, threads, &nrm[1], d_nonces2, h_JackpotFalseFunction[thr_id], startNounce, inpHashes, d_validNonceTable);
@@ -329,10 +339,9 @@ __host__ void jackpot_compactTest_cpu_dualCompaction(int thr_id, int threads, ui
 	*/
 }
 
-__host__ void jackpot_compactTest_cpu_hash_64(int thr_id, int threads, uint32_t startNounce, uint32_t *inpHashes, uint32_t *d_validNonceTable,
-											uint32_t *d_nonces1, size_t *nrm1,
-											uint32_t *d_nonces2, size_t *nrm2,
-											int order)
+__host__
+void jackpot_compactTest_cpu_hash_64(int thr_id, uint32_t threads, uint32_t startNounce, uint32_t *inpHashes, uint32_t *d_validNonceTable,
+	uint32_t *d_nonces1, uint32_t *nrm1, uint32_t *d_nonces2, uint32_t *nrm2, int order)
 {
 	// Wenn validNonceTable genutzt wird, dann werden auch nur die Nonces betrachtet, die dort enthalten sind
 	// "threads" ist in diesem Fall auf die Länge dieses Array's zu setzen!
@@ -342,6 +351,6 @@ __host__ void jackpot_compactTest_cpu_hash_64(int thr_id, int threads, uint32_t 
 		startNounce, inpHashes, d_validNonceTable);
 
 	cudaStreamSynchronize(NULL); // Das original braucht zwar etwas CPU-Last, ist an dieser Stelle aber evtl besser
-	*nrm1 = (size_t)h_numValid[thr_id][0];
-	*nrm2 = (size_t)h_numValid[thr_id][1];
+	*nrm1 = h_numValid[thr_id][0];
+	*nrm2 = h_numValid[thr_id][1];
 }

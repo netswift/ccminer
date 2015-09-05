@@ -118,9 +118,9 @@ template <int BLOCKSIZE> __device__ void blake512_compress( uint64_t *h, const u
     for( i = 0; i < 16; ++i )  h[i % 8] ^= v[i];
 }
 
-template <int BLOCKSIZE> __global__ void blake512_gpu_hash(int threads, uint32_t startNounce, void *outputHash, uint32_t *heftyHashes, uint32_t *nonceVector)
+template <int BLOCKSIZE> __global__ void blake512_gpu_hash(uint32_t threads, uint32_t startNounce, void *outputHash, uint32_t *heftyHashes, uint32_t *nonceVector)
 {
-	int thread = (blockDim.x * blockIdx.x + threadIdx.x);
+	uint32_t thread = (blockDim.x * blockIdx.x + threadIdx.x);
 	if (thread < threads)
 	{
 		// bestimme den aktuellen Zähler
@@ -149,20 +149,20 @@ template <int BLOCKSIZE> __global__ void blake512_gpu_hash(int threads, uint32_t
 		for (int i=0; i < 16; ++i) buf[i] = c_PaddedMessage[i];
 
 		// die Nounce durch die thread-spezifische ersetzen
-		buf[9] = REPLACE_HIWORD(buf[9], nounce);
+		buf[9] = REPLACE_HIDWORD(buf[9], nounce);
 
 		uint32_t *hefty = heftyHashes + 8 * hashPosition;
 		if (BLOCKSIZE == 84) {
 			// den thread-spezifischen Hefty1 hash einsetzen
 			// aufwändig, weil das nicht mit uint64_t Wörtern aligned ist.
-			buf[10] = REPLACE_HIWORD(buf[10], hefty[0]);
-			buf[11] = REPLACE_LOWORD(buf[11], hefty[1]);
-			buf[11] = REPLACE_HIWORD(buf[11], hefty[2]);
-			buf[12] = REPLACE_LOWORD(buf[12], hefty[3]);
-			buf[12] = REPLACE_HIWORD(buf[12], hefty[4]);
-			buf[13] = REPLACE_LOWORD(buf[13], hefty[5]);
-			buf[13] = REPLACE_HIWORD(buf[13], hefty[6]);
-			buf[14] = REPLACE_LOWORD(buf[14], hefty[7]);
+			buf[10] = REPLACE_HIDWORD(buf[10], hefty[0]);
+			buf[11] = REPLACE_LODWORD(buf[11], hefty[1]);
+			buf[11] = REPLACE_HIDWORD(buf[11], hefty[2]);
+			buf[12] = REPLACE_LODWORD(buf[12], hefty[3]);
+			buf[12] = REPLACE_HIDWORD(buf[12], hefty[4]);
+			buf[13] = REPLACE_LODWORD(buf[13], hefty[5]);
+			buf[13] = REPLACE_HIDWORD(buf[13], hefty[6]);
+			buf[14] = REPLACE_LODWORD(buf[14], hefty[7]);
 		}
 		else if (BLOCKSIZE == 80) {
 			buf[10] = MAKE_ULONGLONG(hefty[0], hefty[1]);
@@ -192,7 +192,7 @@ template <int BLOCKSIZE> __global__ void blake512_gpu_hash(int threads, uint32_t
 // ---------------------------- END CUDA blake512 functions ------------------------------------
 
 // Setup-Funktionen
-__host__ void blake512_cpu_init(int thr_id, int threads)
+__host__ void blake512_cpu_init(int thr_id, uint32_t threads)
 {
 	// Kopiere die Hash-Tabellen in den GPU-Speicher
 	cudaMemcpyToSymbol( c_sigma,
@@ -238,9 +238,9 @@ __host__ void blake512_cpu_setBlock(void *pdata, int len)
 	BLOCKSIZE = len;
 }
 
-__host__ void blake512_cpu_hash(int thr_id, int threads, uint32_t startNounce)
+__host__ void blake512_cpu_hash(int thr_id, uint32_t threads, uint32_t startNounce)
 {
-	const int threadsperblock = 256;
+	const uint32_t threadsperblock = 256;
 
 	// berechne wie viele Thread Blocks wir brauchen
 	dim3 grid((threads + threadsperblock-1)/threadsperblock);

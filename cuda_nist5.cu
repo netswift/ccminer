@@ -13,21 +13,21 @@ extern "C"
 
 static uint32_t *d_hash[MAX_GPUS];
 
-extern void quark_blake512_cpu_init(int thr_id, int threads);
-extern void quark_blake512_cpu_setBlock_80(void *pdata);
-extern void quark_blake512_cpu_hash_80(int thr_id, int threads, uint32_t startNounce, uint32_t *d_hash, int order);
+extern void quark_blake512_cpu_init(int thr_id, uint32_t threads);
+extern void quark_blake512_cpu_setBlock_80(int thr_id, uint32_t *pdata);
+extern void quark_blake512_cpu_hash_80(int thr_id, uint32_t threads, uint32_t startNounce, uint32_t *d_hash);
 
-extern void quark_groestl512_cpu_init(int thr_id, int threads);
-extern void quark_groestl512_cpu_hash_64(int thr_id, int threads, uint32_t startNounce, uint32_t *d_nonceVector, uint32_t *d_hash, int order);
+extern void quark_groestl512_cpu_init(int thr_id, uint32_t threads);
+extern void quark_groestl512_cpu_hash_64(int thr_id, uint32_t threads, uint32_t startNounce, uint32_t *d_nonceVector, uint32_t *d_hash, int order);
 
-extern void quark_jh512_cpu_init(int thr_id, int threads);
-extern void quark_jh512_cpu_hash_64(int thr_id, int threads, uint32_t startNounce, uint32_t *d_nonceVector, uint32_t *d_hash, int order);
+extern void quark_jh512_cpu_init(int thr_id, uint32_t threads);
+extern void quark_jh512_cpu_hash_64(int thr_id, uint32_t threads, uint32_t startNounce, uint32_t *d_nonceVector, uint32_t *d_hash, int order);
 
-extern void quark_keccak512_cpu_init(int thr_id, int threads);
-extern void quark_keccak512_cpu_hash_64(int thr_id, int threads, uint32_t startNounce, uint32_t *d_nonceVector, uint32_t *d_hash, int order);
+extern void quark_keccak512_cpu_init(int thr_id, uint32_t threads);
+extern void quark_keccak512_cpu_hash_64(int thr_id, uint32_t threads, uint32_t startNounce, uint32_t *d_nonceVector, uint32_t *d_hash, int order);
 
-extern void quark_skein512_cpu_init(int thr_id, int threads);
-extern void quark_skein512_cpu_hash_64(int thr_id, int threads, uint32_t startNounce, uint32_t *d_nonceVector, uint32_t *d_hash, int order);
+extern void quark_skein512_cpu_init(int thr_id, uint32_t threads);
+extern void quark_skein512_cpu_hash_64(int thr_id, uint32_t threads, uint32_t startNounce, uint32_t *d_nonceVector, uint32_t *d_hash, int order);
 
 
 // Original nist5hash Funktion aus einem miner Quelltext
@@ -72,8 +72,8 @@ extern "C" int scanhash_nist5(int thr_id, uint32_t *pdata,
 {
 	const uint32_t first_nonce = pdata[19];
 
-	int throughput = (int) device_intensity(thr_id, __func__, 1 << 20); // 256*256*16
-	throughput = min(throughput, (int) (max_nonce - first_nonce));
+	uint32_t throughput =  device_intensity(thr_id, __func__, 1 << 20); // 256*256*16
+	throughput = min(throughput,  (max_nonce - first_nonce));
 
 	if (opt_benchmark)
 		((uint32_t*)ptarget)[7] = 0x00FF;
@@ -97,16 +97,16 @@ extern "C" int scanhash_nist5(int thr_id, uint32_t *pdata,
 
 	uint32_t endiandata[20];
 	for (int k=0; k < 20; k++)
-		be32enc(&endiandata[k], ((uint32_t*)pdata)[k]);
+		be32enc(&endiandata[k], pdata[k]);
 
-	quark_blake512_cpu_setBlock_80((void*)endiandata);
+	quark_blake512_cpu_setBlock_80(thr_id, endiandata);
 	cuda_check_cpu_setTarget(ptarget);
 
 	do {
 		int order = 0;
 
 		// Hash with CUDA
-		quark_blake512_cpu_hash_80(thr_id, throughput, pdata[19], d_hash[thr_id], order++);
+		quark_blake512_cpu_hash_80(thr_id, throughput, pdata[19], d_hash[thr_id]); order++;
 		quark_groestl512_cpu_hash_64(thr_id, throughput, pdata[19], NULL, d_hash[thr_id], order++);
 		quark_jh512_cpu_hash_64(thr_id, throughput, pdata[19], NULL, d_hash[thr_id], order++);
 		quark_keccak512_cpu_hash_64(thr_id, throughput, pdata[19], NULL, d_hash[thr_id], order++);
@@ -132,7 +132,7 @@ extern "C" int scanhash_nist5(int thr_id, uint32_t *pdata,
 				return res;
 			}
 			else {
-				applog(LOG_INFO, "GPU #%d: result for nonce $%08X does not validate on CPU!", thr_id, foundNonce);
+				applog(LOG_WARNING, "GPU #%d: result for nonce %08x does not validate on CPU!", device_map[thr_id], foundNonce);
 			}
 		}
 

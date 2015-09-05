@@ -23,38 +23,26 @@
     <RootNamespace>ccminer</RootNamespace>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <CharacterSet>MultiByte</CharacterSet>
     <PlatformToolset>v120</PlatformToolset>
     <CLRSupport>false</CLRSupport>
+    <LinkIncremental>false</LinkIncremental>
     <WholeProgramOptimization>true</WholeProgramOptimization>
   </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <CharacterSet>MultiByte</CharacterSet>
     <PlatformToolset>v120</PlatformToolset>
     <CLRSupport>false</CLRSupport>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
-    <UseDebugLibraries>false</UseDebugLibraries>
-    <CharacterSet>MultiByte</CharacterSet>
-    <PlatformToolset>v120</PlatformToolset>
-    <CLRSupport>false</CLRSupport>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
-    <UseDebugLibraries>true</UseDebugLibraries>
-    <CharacterSet>MultiByte</CharacterSet>
-    <PlatformToolset>v120</PlatformToolset>
-    <CLRSupport>false</CLRSupport>
+    <LinkIncremental>false</LinkIncremental>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
-    <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 7.0.props" />
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 6.5.props" />
   </ImportGroup>
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
@@ -68,19 +56,6 @@
   <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
-  <PropertyGroup Label="UserMacros" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
-    <LinkIncremental>true</LinkIncremental>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <LinkIncremental>false</LinkIncremental>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
-    <LinkIncremental>false</LinkIncremental>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <LinkIncremental>false</LinkIncremental>
-  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -90,6 +65,8 @@
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;CURL_STATICLIB;USE_WRAPNVML;SCRYPT_KECCAK512;SCRYPT_CHACHA;SCRYPT_CHOOSE_COMPILETIME;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>.;compat;compat\curl-for-windows\curl\include;compat\jansson;compat\getopt;compat\pthreads;compat\curl-for-windows\openssl\openssl\include;compat\curl-for-windows\zlib;%(AdditionalIncludeDirectories);$(CudaToolkitIncludeDir)</AdditionalIncludeDirectories>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <OpenMPSupport>true</OpenMPSupport>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -102,10 +79,12 @@
     </Link>
     <CudaCompile>
       <CInterleavedPTX>false</CInterleavedPTX>
+      <GenerateLineInfo>true</GenerateLineInfo>
       <MaxRegCount>80</MaxRegCount>
       <PtxAsOptionV>true</PtxAsOptionV>
-      <Keep>false</Keep>
-      <CodeGeneration>compute_30,sm_30</CodeGeneration>
+      <Keep>true</Keep>
+      <CodeGeneration>compute_50,sm_50</CodeGeneration>
+      <Include>$(NVTOOLSEXT_PATH)\include;..\..\..\Common\C99</Include>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -118,6 +97,8 @@
       <AdditionalIncludeDirectories>.;compat;compat\curl-for-windows\curl\include;compat\jansson;compat\getopt;compat\pthreads;compat\curl-for-windows\openssl\openssl\include;compat\curl-for-windows\zlib;%(AdditionalIncludeDirectories);$(CudaToolkitIncludeDir)</AdditionalIncludeDirectories>
       <StructMemberAlignment>8Bytes</StructMemberAlignment>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <OpenMPSupport>true</OpenMPSupport>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -130,11 +111,13 @@
     </Link>
     <CudaCompile>
       <CInterleavedPTX>false</CInterleavedPTX>
+      <GenerateLineInfo>true</GenerateLineInfo>
       <MaxRegCount>80</MaxRegCount>
       <PtxAsOptionV>true</PtxAsOptionV>
       <Keep>true</Keep>
-      <CodeGeneration>compute_30,sm_30</CodeGeneration>
+      <CodeGeneration>compute_50,sm_50</CodeGeneration>
       <Include>$(NVTOOLSEXT_PATH)\include;..\..\..\Common\C99</Include>
+      <TargetMachinePlatform>64</TargetMachinePlatform>
     </CudaCompile>
     <CudaLink>
       <PerformDeviceLink>false</PerformDeviceLink>
@@ -153,7 +136,8 @@
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;CURL_STATICLIB;USE_WRAPNVML;SCRYPT_KECCAK512;SCRYPT_CHACHA;SCRYPT_CHOOSE_COMPILETIME;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>.;compat;compat\curl-for-windows\curl\include;compat\jansson;compat\getopt;compat\pthreads;compat\curl-for-windows\openssl\openssl\include;compat\curl-for-windows\zlib;%(AdditionalIncludeDirectories);$(CudaToolkitIncludeDir)</AdditionalIncludeDirectories>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
-      <ExceptionHandling>SyncCThrow</ExceptionHandling>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <OpenMPSupport>true</OpenMPSupport>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>false</GenerateDebugInformation>
@@ -172,18 +156,14 @@
       <CInterleavedPTX>false</CInterleavedPTX>
       <MaxRegCount>80</MaxRegCount>
       <PtxAsOptionV>true</PtxAsOptionV>
-      <Keep>false</Keep>
-      <CodeGeneration>compute_30,sm_30;</CodeGeneration>
+      <Keep>true</Keep>
+      <CodeGeneration>compute_50,sm_50;compute_52,sm_52;compute_30,sm_30;compute_35,sm_35</CodeGeneration>
       <AdditionalOptions>--ptxas-options="-O2" %(AdditionalOptions)</AdditionalOptions>
-      <Defines>
-      </Defines>
-      <Optimization>O3</Optimization>
+      <Optimization>O2</Optimization>
     </CudaCompile>
     <CudaLink>
       <GPUDebugInfo>false</GPUDebugInfo>
-    </CudaLink>
-    <CudaLink>
-      <Optimization>O2</Optimization>
+      <Optimization>O3</Optimization>
     </CudaLink>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -192,12 +172,15 @@
       <Optimization>MaxSpeed</Optimization>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
-      <EnableEnhancedInstructionSet>AdvancedVectorExtensions</EnableEnhancedInstructionSet>
+      <EnableEnhancedInstructionSet>
+      </EnableEnhancedInstructionSet>
+      <OpenMPSupport>true</OpenMPSupport>
       <CompileAsManaged>false</CompileAsManaged>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;CURL_STATICLIB;USE_WRAPNVML;SCRYPT_KECCAK512;SCRYPT_CHACHA;SCRYPT_CHOOSE_COMPILETIME;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>.;compat;compat\curl-for-windows\curl\include;compat\jansson;compat\getopt;compat\pthreads;compat\curl-for-windows\openssl\openssl\include;compat\curl-for-windows\zlib;%(AdditionalIncludeDirectories);$(CudaToolkitIncludeDir)</AdditionalIncludeDirectories>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>false</GenerateDebugInformation>
@@ -215,12 +198,14 @@
       <CInterleavedPTX>false</CInterleavedPTX>
       <MaxRegCount>80</MaxRegCount>
       <PtxAsOptionV>true</PtxAsOptionV>
-      <Keep>false</Keep>
-      <CodeGeneration>compute_30,sm_30</CodeGeneration>
-      <Include>
-      </Include>
+      <Keep>true</Keep>
+      <CodeGeneration>compute_35,sm_35;compute_50,sm_50;compute_52,sm_52</CodeGeneration>
+      <Include>$(NVTOOLSEXT_PATH)\include;..\..\..\Common\C99</Include>
+      <Optimization>O3</Optimization>
+      <TargetMachinePlatform>64</TargetMachinePlatform>
     </CudaCompile>
     <CudaLink>
+      <Optimization>O3</Optimization>
       <PerformDeviceLink>false</PerformDeviceLink>
     </CudaLink>
   </ItemDefinitionGroup>
@@ -242,7 +227,10 @@
       <TreatWChar_tAsBuiltInType>false</TreatWChar_tAsBuiltInType>
       <Optimization Condition="'$(Configuration)'=='Release'">Full</Optimization>
     </ClCompile>
+    <ClCompile Include="pools.cpp" />
     <ClCompile Include="util.cpp" />
+    <ClCompile Include="bignum.cpp" />
+    <ClInclude Include="bignum.hpp" />
     <ClCompile Include="fuguecoin.cpp" />
     <ClCompile Include="groestlcoin.cpp" />
     <ClCompile Include="hashlog.cpp" />
@@ -253,12 +241,20 @@
     <ClCompile Include="crc32.c" />
     <ClCompile Include="hefty1.c" />
     <ClCompile Include="myriadgroestl.cpp" />
-    <ClCompile Include="scrypt.c">
-      <Optimization Condition="'$(Configuration)'=='Release'">Full</Optimization>
-      <AdditionalOptions>/Tp %(AdditionalOptions)</AdditionalOptions>
-    </ClCompile>
     <ClCompile Include="lyra2\Lyra2.c" />
     <ClCompile Include="lyra2\Sponge.c" />
+    <ClInclude Include="neoscrypt\neoscrypt.h" />
+    <ClCompile Include="neoscrypt\neoscrypt.cpp" />
+    <ClCompile Include="neoscrypt\neoscrypt-cpu.c" />
+    <ClInclude Include="neoscrypt\cuda_vectors.h" />
+    <CudaCompile Include="Algo256\bmw.cu" />
+    <CudaCompile Include="Algo256\cuda_bmw.cu">
+      <MaxRegCount>76</MaxRegCount>
+    </CudaCompile>
+    <CudaCompile Include="neoscrypt\cuda_neoscrypt.cu" />
+    <ClCompile Include="scrypt-jane.cpp" />
+    <ClCompile Include="scrypt.cpp" />
+    <ClCompile Include="skein2.cpp" />
     <ClCompile Include="sph\aes_helper.c" />
     <ClCompile Include="sph\blake.c" />
     <ClCompile Include="sph\bmw.c" />
@@ -307,11 +303,14 @@
     <ClInclude Include="cpuminer-config.h" />
     <ClInclude Include="cuda_groestlcoin.h" />
     <ClInclude Include="cuda_helper.h" />
+    <ClInclude Include="cuda_vector.h" />
     <ClInclude Include="elist.h" />
     <ClInclude Include="heavy\heavy.h" />
     <ClInclude Include="hefty1.h" />
     <ClInclude Include="miner.h" />
     <ClInclude Include="nvml.h" />
+    <ClInclude Include="res\resource.h" />
+    <ClInclude Include="scrypt\salsa_kernel.h" />
     <ClInclude Include="sph\sph_blake.h" />
     <ClInclude Include="sph\sph_bmw.h" />
     <ClInclude Include="sph\sph_cubehash.h" />
@@ -331,25 +330,42 @@
     <ClInclude Include="sph\sph_types.h" />
     <ClInclude Include="sph\sph_whirlpool.h" />
     <ClInclude Include="uint256.h" />
-  </ItemGroup>
-  <ItemGroup>
     <ClInclude Include="lyra2\Lyra2.h" />
     <ClInclude Include="lyra2\Sponge.h" />
+    <ClInclude Include="quark\groestl_transf_quad.h" />
+    <ClInclude Include="quark\groestl_functions_quad.h" />
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="cuda.cpp" />
-    <CudaCompile Include="bitslice_transformations_quad.cu">
-      <ExcludedFromBuild>true</ExcludedFromBuild>
-    </CudaCompile>
-    <CudaCompile Include="cuda_groestlcoin.cu">
-    </CudaCompile>
-    <CudaCompile Include="cuda_myriadgroestl.cu">
-    </CudaCompile>
+    <CudaCompile Include="cuda_groestlcoin.cu" />
+    <CudaCompile Include="cuda_myriadgroestl.cu" />
     <CudaCompile Include="cuda_nist5.cu">
     </CudaCompile>
-    <CudaCompile Include="groestl_functions_quad.cu">
-      <ExcludedFromBuild>true</ExcludedFromBuild>
+    <CudaCompile Include="scrypt\blake.cu" />
+    <CudaCompile Include="scrypt\keccak.cu" />
+    <CudaCompile Include="scrypt\sha256.cu" />
+    <CudaCompile Include="scrypt\salsa_kernel.cu">
+      <CodeGeneration>compute_20,sm_21</CodeGeneration>
     </CudaCompile>
+    <CudaCompile Include="scrypt\fermi_kernel.cu">
+      <CodeGeneration>compute_20,sm_21</CodeGeneration>
+    </CudaCompile>
+    <CudaCompile Include="scrypt\kepler_kernel.cu">
+      <CodeGeneration>compute_30,sm_30</CodeGeneration>
+    </CudaCompile>
+    <CudaCompile Include="scrypt\nv_kernel.cu">
+      <CodeGeneration>compute_30,sm_30</CodeGeneration>
+    </CudaCompile>
+    <CudaCompile Include="scrypt\nv_kernel2.cu">
+      <CodeGeneration>compute_35,sm_35;compute_50,sm_50;compute_52,sm_52</CodeGeneration>
+    </CudaCompile>
+    <CudaCompile Include="scrypt\test_kernel.cu">
+      <CodeGeneration>compute_20,sm_21</CodeGeneration>
+    </CudaCompile>
+    <CudaCompile Include="scrypt\titan_kernel.cu">
+      <CodeGeneration>compute_35,sm_35;compute_50,sm_50</CodeGeneration>
+    </CudaCompile>
+    <CudaCompile Include="zr5.cu" />
     <CudaCompile Include="heavy\cuda_blake512.cu">
     </CudaCompile>
     <CudaCompile Include="heavy\cuda_combine.cu">
@@ -380,6 +396,8 @@
     </CudaCompile>
     <CudaCompile Include="Algo256\keccak256.cu" />
     <CudaCompile Include="Algo256\cuda_blake256.cu" />
+    <CudaCompile Include="Algo256\cuda_bmw256.cu" />
+    <CudaCompile Include="Algo256\cuda_cubehash256.cu" />
     <CudaCompile Include="Algo256\cuda_fugue256.cu" />
     <CudaCompile Include="Algo256\cuda_groestl256.cu" />
     <CudaCompile Include="Algo256\cuda_keccak256.cu">
@@ -390,8 +408,6 @@
       <MaxRegCount>80</MaxRegCount>
       <AdditionalOptions Condition="'$(Configuration)'=='Release'">--ptxas-options="-dlcm=cg" %(AdditionalOptions)</AdditionalOptions>
       <FastMath>true</FastMath>
-    </CudaCompile>
-    <CudaCompile Include="quark\animecoin.cu">
     </CudaCompile>
     <CudaCompile Include="quark\cuda_bmw512.cu">
       <MaxRegCount>128</MaxRegCount>
@@ -420,7 +436,7 @@
     </CudaCompile>
     <CudaCompile Include="qubit\deep.cu">
     </CudaCompile>
-    <CudaCompile Include="qubit\doom.cu">
+    <CudaCompile Include="qubit\luffa.cu">
     </CudaCompile>
     <CudaCompile Include="qubit\qubit.cu">
     </CudaCompile>
@@ -428,6 +444,14 @@
     </CudaCompile>
     <CudaCompile Include="lyra2\lyra2RE.cu" />
     <CudaCompile Include="lyra2\cuda_lyra2.cu" />
+    <CudaCompile Include="lyra2\lyra2REv2.cu" />
+    <CudaCompile Include="lyra2\cuda_lyra2v2.cu" />
+    <CudaCompile Include="skein.cu">
+      <MaxRegCount>64</MaxRegCount>
+    </CudaCompile>
+    <CudaCompile Include="cuda_skeincoin.cu">
+      <MaxRegCount>48</MaxRegCount>
+    </CudaCompile>
     <CudaCompile Include="x11\cuda_x11_aes.cu">
       <ExcludedFromBuild>true</ExcludedFromBuild>
     </CudaCompile>
@@ -436,7 +460,7 @@
     </CudaCompile>
     <CudaCompile Include="x11\cuda_x11_luffa512.cu" />
     <CudaCompile Include="x11\cuda_x11_luffa512_Cubehash.cu">
-      <MaxRegCount>80</MaxRegCount>
+      <MaxRegCount>76</MaxRegCount>
     </CudaCompile>
     <CudaCompile Include="x11\cuda_x11_shavite512.cu">
       <MaxRegCount>128</MaxRegCount>
@@ -444,8 +468,8 @@
     <CudaCompile Include="x11\cuda_x11_simd512.cu">
       <MaxRegCount>64</MaxRegCount>
     </CudaCompile>
-    <CudaCompile Include="x11\fresh.cu">
-    </CudaCompile>
+    <CudaCompile Include="x11\c11.cu" />
+    <CudaCompile Include="x11\fresh.cu" />
     <CudaCompile Include="x11\s3.cu" />
     <CudaCompile Include="x11\simd_functions.cu">
       <ExcludedFromBuild>true</ExcludedFromBuild>
@@ -459,27 +483,33 @@
     </CudaCompile>
     <CudaCompile Include="x13\x13.cu">
     </CudaCompile>
-    <CudaCompile Include="x15\cuda_x14_shabal512.cu">
+    <CudaCompile Include="x15\x14.cu">
     </CudaCompile>
-    <CudaCompile Include="x15\cuda_x15_whirlpool.cu">
+    <CudaCompile Include="x15\cuda_x14_shabal512.cu" />
+    <CudaCompile Include="x15\cuda_x15_whirlpool.cu" />
+    <CudaCompile Include="x15\x15.cu" />
+    <CudaCompile Include="x15\cuda_whirlpoolx.cu" />
+    <CudaCompile Include="x15\whirlpoolx.cu" />
+    <CudaCompile Include="x17\x17.cu">
     </CudaCompile>
     <CudaCompile Include="x17\cuda_x17_haval512.cu">
     </CudaCompile>
     <CudaCompile Include="x17\cuda_x17_sha512.cu">
       <MaxRegCount>80</MaxRegCount>
     </CudaCompile>
-    <CudaCompile Include="x15\whirlpool.cu">
-    </CudaCompile>
-    <CudaCompile Include="x15\x14.cu">
-    </CudaCompile>
-    <CudaCompile Include="x15\x15.cu">
-    </CudaCompile>
-    <CudaCompile Include="x17\x17.cu">
-    </CudaCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="res\ccminer.ico" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="res\ccminer.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="README.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
-    <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 7.0.targets" />
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 6.5.targets" />
   </ImportGroup>
   <!-- Copy the required dlls -->
   <Target Name="AfterBuild">

@@ -12,10 +12,10 @@ extern "C" {
 #include <memory.h>
 
 static __device__ uint64_t cuda_swab32ll(uint64_t x) {
-	return MAKE_ULONGLONG(cuda_swab32(_LOWORD(x)), cuda_swab32(_HIWORD(x)));
+	return MAKE_ULONGLONG(cuda_swab32(_LODWORD(x)), cuda_swab32(_HIDWORD(x)));
 }
 
-__constant__ static uint32_t  c_data[20];
+__constant__ static uint32_t c_data[3+1];
 
 __constant__ static uint32_t sigma[16][16];
 static uint32_t  c_sigma[16][16] = {
@@ -73,7 +73,7 @@ static const uint32_t  c_u256[16] = {
 }
 
 //#define ROTL32(x, n) ((x) << (n)) | ((x) >> (32 - (n)))
-#define ROTR32(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
+//#define ROTR32(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
 #define hostGS(a,b,c,d,x) { \
 	const uint32_t idx1 = c_sigma[r][x]; \
 	const uint32_t idx2 = c_sigma[r][x+1]; \
@@ -195,17 +195,16 @@ void blake256_gpu_hash_80(const uint32_t threads, const uint32_t startNonce, uin
 	uint32_t thread = (blockDim.x * blockIdx.x + threadIdx.x);
 	if (thread < threads)
 	{
-		const uint32_t nonce = startNonce + thread;
 		uint32_t h[8];
 		uint32_t input[4];
 
-		#pragma unroll 8
-		for (int i = 0; i<8; i++) { h[i] = cpu_h[i];}
+		#pragma unroll
+		for (int i = 0; i < 8; i++) h[i] = cpu_h[i];
 
-		#pragma unroll 3
-		for (int i = 0; i < 3; ++i) input[i] = c_data[16 + i];
+		#pragma unroll
+		for (int i = 0; i < 3; ++i) input[i] = c_data[i];
 
-		input[3] = nonce;
+		input[3] = startNonce + thread;
 		blake256_compress2nd(h, input, 640);
 
         #pragma unroll
@@ -218,7 +217,7 @@ void blake256_gpu_hash_80(const uint32_t threads, const uint32_t startNonce, uin
 __host__
 void blake256_cpu_hash_80(const int thr_id, const uint32_t threads, const uint32_t startNonce, uint64_t *Hash, int order)
 {
-	const int threadsperblock = 256;
+	const uint32_t threadsperblock = 256;
 
 	dim3 grid((threads + threadsperblock - 1) / threadsperblock);
 	dim3 block(threadsperblock);
@@ -230,20 +229,18 @@ void blake256_cpu_hash_80(const int thr_id, const uint32_t threads, const uint32
 __host__
 void blake256_cpu_setBlock_80(uint32_t *pdata)
 {
-	uint32_t h[8];
-	uint32_t data[20];
+	uint32_t h[8], data[20];
+
 	memcpy(data, pdata, 80);
-	for (int i = 0; i<8; i++) {
-		h[i] = c_IV256[i];
-	}
+	memcpy(h, c_IV256, sizeof(c_IV256));
 	blake256_compress1st(h, pdata, 512);
 
 	cudaMemcpyToSymbol(cpu_h, h, sizeof(h), 0, cudaMemcpyHostToDevice);
-	cudaMemcpyToSymbol(c_data, data, sizeof(data), 0, cudaMemcpyHostToDevice);
+	cudaMemcpyToSymbol(c_data, &data[16], sizeof(c_data), 0, cudaMemcpyHostToDevice);
 }
 
 __host__
-void blake256_cpu_init(int thr_id, int threads)
+void blake256_cpu_init(int thr_id, uint32_t threads)
 {
 	cudaMemcpyToSymbol(u256, c_u256, sizeof(c_u256), 0, cudaMemcpyHostToDevice);
 	cudaMemcpyToSymbol(sigma, c_sigma, sizeof(c_sigma), 0, cudaMemcpyHostToDevice);

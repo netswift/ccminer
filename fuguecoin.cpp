@@ -1,7 +1,7 @@
 #include <string.h>
 #include <stdint.h>
+#include <cuda_runtime.h>
 
-#include "uint256.h"
 #include "sph/sph_fugue.h"
 
 #include "miner.h"
@@ -22,12 +22,12 @@ extern "C" void my_fugue256_addbits_and_close(void *cc, unsigned ub, unsigned n,
 
 static bool init[MAX_GPUS] = { 0 };
 
-extern "C" int scanhash_fugue256(int thr_id, uint32_t *pdata, const uint32_t *ptarget,
+int scanhash_fugue256(int thr_id, uint32_t *pdata, const uint32_t *ptarget,
 	uint32_t max_nonce, unsigned long *hashes_done)
 {
 	uint32_t start_nonce = pdata[19]++;
 	int intensity = (device_sm[device_map[thr_id]] > 500) ? 22 : 19;
-	int throughput = (int) device_intensity(thr_id, __func__, 1 << intensity); // 256*256*8
+	uint32_t throughput =  device_intensity(thr_id, __func__, 1 << intensity); // 256*256*8
 	throughput = min(throughput, max_nonce - start_nonce);
 
 	if (opt_benchmark)
@@ -36,6 +36,8 @@ extern "C" int scanhash_fugue256(int thr_id, uint32_t *pdata, const uint32_t *pt
 	// init
 	if(!init[thr_id])
 	{
+		cudaSetDevice(device_map[thr_id]);
+
 		fugue256_cpu_init(thr_id, throughput);
 		init[thr_id] = true;
 	}
@@ -50,10 +52,10 @@ extern "C" int scanhash_fugue256(int thr_id, uint32_t *pdata, const uint32_t *pt
 
 	do {
 		// GPU
-		uint32_t foundNounce = 0xFFFFFFFF;
+		uint32_t foundNounce = UINT32_MAX;
 		fugue256_cpu_hash(thr_id, throughput, pdata[19], NULL, &foundNounce);
 
-		if(foundNounce < 0xffffffff)
+		if (foundNounce < UINT32_MAX)
 		{
 			uint32_t hash[8];
 			const uint32_t Htarg = ptarget[7];
@@ -70,7 +72,8 @@ extern "C" int scanhash_fugue256(int thr_id, uint32_t *pdata, const uint32_t *pt
 				*hashes_done = foundNounce - start_nonce + 1;
 				return 1;
 			} else {
-				applog(LOG_INFO, "GPU #%d: result for nonce $%08X does not validate on CPU!", thr_id, foundNounce);
+				applog(LOG_WARNING, "GPU #%d: result for nonce %08x does not validate on CPU!",
+					device_map[thr_id], foundNounce);
 			}
 		}
 

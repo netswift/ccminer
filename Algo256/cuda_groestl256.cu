@@ -5,8 +5,8 @@
 
 #include "cuda_helper.h"
 
-uint32_t *d_gnounce[MAX_GPUS];
-uint32_t *d_GNonce[MAX_GPUS];
+static uint32_t *h_GNonces[MAX_GPUS];
+static uint32_t *d_GNonces[MAX_GPUS];
 
 __constant__ uint32_t pTarget[8];
 
@@ -105,7 +105,7 @@ extern uint32_t T3up_cpu[];
 extern uint32_t T3dn_cpu[];
 
 __device__ __forceinline__
-void groestl256_perm_P(int thread,uint32_t *a, char *mixtabs)
+void groestl256_perm_P(uint32_t thread,uint32_t *a, char *mixtabs)
 {
 	#pragma unroll 10
 	for (int r = 0; r<10; r++)
@@ -136,7 +136,7 @@ void groestl256_perm_P(int thread,uint32_t *a, char *mixtabs)
 }
 
 __device__ __forceinline__
-void groestl256_perm_Q(int thread, uint32_t *a, char *mixtabs)
+void groestl256_perm_Q(uint32_t thread, uint32_t *a, char *mixtabs)
 {
 	#pragma unroll
 	for (int r = 0; r<10; r++)
@@ -175,7 +175,7 @@ void groestl256_perm_Q(int thread, uint32_t *a, char *mixtabs)
 }
 
 __global__ __launch_bounds__(256,1)
-void groestl256_gpu_hash32(int threads, uint32_t startNounce, uint64_t *outputHash, uint32_t *nonceVector)
+void groestl256_gpu_hash32(uint32_t threads, uint32_t startNounce, uint64_t *outputHash, uint32_t *resNonces)
 {
 #if USE_SHARED
 	extern __shared__ char mixtabs[];
@@ -194,7 +194,7 @@ void groestl256_gpu_hash32(int threads, uint32_t startNounce, uint64_t *outputHa
 	__syncthreads();
 #endif
 
-	int thread = (blockDim.x * blockIdx.x + threadIdx.x);
+	uint32_t thread = (blockDim.x * blockIdx.x + threadIdx.x);
 	if (thread < threads)
 	{
 		// GROESTL
@@ -243,7 +243,8 @@ void groestl256_gpu_hash32(int threads, uint32_t startNounce, uint64_t *outputHa
 
 		uint32_t nonce = startNounce + thread;
 		if (state[15] <= pTarget[7]) {
-			nonceVector[0] = nonce;
+			atomicMin(&resNonces[1], resNonces[0]);
+			atomicMin(&resNonces[0], nonce);
 		}
 	}
 }
@@ -259,7 +260,7 @@ void groestl256_gpu_hash32(int threads, uint32_t startNounce, uint64_t *outputHa
 	  cudaBindTexture(NULL, &texname, texmem, &channelDesc, texsize ); } \
 
 __host__
-void groestl256_cpu_init(int thr_id, int threads)
+void groestl256_cpu_init(int thr_id, uint32_t threads)
 {
 
 	// Texturen mit obigem Makro initialisieren
@@ -272,16 +273,16 @@ void groestl256_cpu_init(int thr_id, int threads)
 	texDef(t3up2, d_T3up, T3up_cpu, sizeof(uint32_t) * 256);
 	texDef(t3dn2, d_T3dn, T3dn_cpu, sizeof(uint32_t) * 256);
 
-	cudaMalloc(&d_GNonce[thr_id], sizeof(uint32_t));
-	cudaMallocHost(&d_gnounce[thr_id], 1*sizeof(uint32_t));
+	cudaMalloc(&d_GNonces[thr_id], 2*sizeof(uint32_t));
+	cudaMallocHost(&h_GNonces[thr_id], 2*sizeof(uint32_t));
 }
 
 __host__
-uint32_t groestl256_cpu_hash_32(int thr_id, int threads, uint32_t startNounce, uint64_t *d_outputHash, int order)
+uint32_t groestl256_cpu_hash_32(int thr_id, uint32_t threads, uint32_t startNounce, uint64_t *d_outputHash, int order)
 {
-	uint32_t result = 0xffffffff;
-	cudaMemset(d_GNonce[thr_id], 0xff, sizeof(uint32_t));
-	const int threadsperblock = 256;
+	uint32_t result = UINT32_MAX;
+	cudaMemset(d_GNonces[thr_id], 0xff, 2*sizeof(uint32_t));
+	const uint32_t threadsperblock = 256;
 
 	// berechne wie viele Thread Blocks wir brauchen
 	dim3 grid((threads + threadsperblock-1)/threadsperblock);
@@ -292,18 +293,30 @@ uint32_t groestl256_cpu_hash_32(int thr_id, int threads, uint32_t startNounce, u
 #else
 	size_t shared_size = 0;
 #endif
-	groestl256_gpu_hash32<<<grid, block, shared_size>>>(threads, startNounce, d_outputHash, d_GNonce[thr_id]);
+	groestl256_gpu_hash32<<<grid, block, shared_size>>>(threads, startNounce, d_outputHash, d_GNonces[thr_id]);
 
 	MyStreamSynchronize(NULL, order, thr_id);
-	cudaMemcpy(d_gnounce[thr_id], d_GNonce[thr_id], sizeof(uint32_t), cudaMemcpyDeviceToHost);
-	cudaThreadSynchronize();
-	result = *d_gnounce[thr_id];
+
+	// get first found nonce
+	cudaMemcpy(h_GNonces[thr_id], d_GNonces[thr_id], 1*sizeof(uint32_t), cudaMemcpyDeviceToHost);
+	result = *h_GNonces[thr_id];
 
 	return result;
 }
 
 __host__
+uint32_t groestl256_getSecNonce(int thr_id, int num)
+{
+	uint32_t results[2];
+	memset(results, 0xFF, sizeof(results));
+	cudaMemcpy(results, d_GNonces[thr_id], sizeof(results), cudaMemcpyDeviceToHost);
+	if (results[1] == results[0])
+		return UINT32_MAX;
+	return results[num];
+}
+
+__host__
 void groestl256_setTarget(const void *pTargetIn)
 {
-	cudaMemcpyToSymbol(pTarget, pTargetIn, 8 * sizeof(uint32_t), 0, cudaMemcpyHostToDevice);
+	cudaMemcpyToSymbol(pTarget, pTargetIn, 32, 0, cudaMemcpyHostToDevice);
 }

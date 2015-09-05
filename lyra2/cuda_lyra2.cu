@@ -89,6 +89,9 @@ static void round_lyra(uint2 *s)
 __device__ __forceinline__
 void reduceDuplexRowSetup(const int rowIn, const int rowInOut, const int rowOut, uint2 state[16], uint2 Matrix[96][8])
 {
+#if __CUDA_ARCH__ > 500
+	#pragma unroll
+#endif
 	for (int i = 0; i < 8; i++)
 	{
 		#pragma unroll
@@ -117,9 +120,9 @@ void reduceDuplexRowSetup(const int rowIn, const int rowInOut, const int rowOut,
 }
 
 __global__ __launch_bounds__(TPB, 1)
-void lyra2_gpu_hash_32(int threads, uint32_t startNounce, uint64_t *outputHash)
+void lyra2_gpu_hash_32(uint32_t threads, uint32_t startNounce, uint64_t *outputHash)
 {
-	int thread = (blockDim.x * blockIdx.x + threadIdx.x);
+	uint32_t thread = (blockDim.x * blockIdx.x + threadIdx.x);
 	if (thread < threads)
 	{
 		uint2 state[16];
@@ -209,9 +212,9 @@ void lyra2_gpu_hash_32(int threads, uint32_t startNounce, uint64_t *outputHash)
 }
 
 __host__
-void lyra2_cpu_hash_32(int thr_id, int threads, uint32_t startNounce, uint64_t *d_outputHash, int order)
+void lyra2_cpu_hash_32(int thr_id, uint32_t threads, uint32_t startNounce, uint64_t *d_outputHash, int order)
 {
-	const int threadsperblock = TPB;
+	const uint32_t threadsperblock = TPB;
 
 	dim3 grid((threads + threadsperblock - 1) / threadsperblock);
 	dim3 block(threadsperblock);

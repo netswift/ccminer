@@ -1,6 +1,7 @@
 ﻿#include <stdio.h>
 #include <memory.h>
 #include <string.h>
+#include <unistd.h>
 #include <map>
 
 #ifndef _WIN32
@@ -18,6 +19,7 @@
 #endif
 
 #include "miner.h"
+#include "nvml.h"
 
 #include "cuda_runtime.h"
 
@@ -60,19 +62,49 @@ void cuda_devicenames()
 		exit(1);
 	}
 
+	GPU_N = min(MAX_GPUS, GPU_N);
 	for (int i=0; i < GPU_N; i++)
 	{
+		char vendorname[32] = { 0 };
 		cudaDeviceProp props;
 		cudaGetDeviceProperties(&props, device_map[i]);
 
-		device_name[i] = strdup(props.name);
 		device_sm[i] = (props.major * 100 + props.minor * 10);
+
+		if (device_name[i]) {
+			free(device_name[i]);
+			device_name[i] = NULL;
+		}
+#ifdef USE_WRAPNVML
+		if (gpu_vendor((uint8_t)props.pciBusID, vendorname) > 0 && strlen(vendorname)) {
+			device_name[i] = (char*) calloc(1, strlen(vendorname) + strlen(props.name) + 2);
+			if (!strncmp(props.name, "GeForce ", 8))
+				sprintf(device_name[i], "%s %s", vendorname, &props.name[8]);
+			else
+				sprintf(device_name[i], "%s %s", vendorname, props.name);
+		} else
+#endif
+			device_name[i] = strdup(props.name);
 	}
 }
 
-// Can't be called directly in cpu-miner.c
-void cuda_devicereset()
+void cuda_print_devices()
 {
+	int ngpus = cuda_num_devices();
+	cuda_devicenames();
+	for (int n=0; n < ngpus; n++) {
+		int m = device_map[n];
+		cudaDeviceProp props;
+		cudaGetDeviceProperties(&props, m);
+		if (!opt_n_threads || n < opt_n_threads) {
+			fprintf(stderr, "GPU #%d: SM %d.%d %s\n", m, props.major, props.minor, device_name[n]);
+		}
+	}
+}
+
+void cuda_shutdown()
+{
+	cudaDeviceSynchronize();
 	cudaDeviceReset();
 }
 
@@ -119,6 +151,7 @@ uint32_t device_intensity(int thr_id, const char *func, uint32_t defcount)
 }
 
 // Zeitsynchronisations-Routine von cudaminer mit CPU sleep
+// Note: if you disable all of these calls, CPU usage will hit 100%
 typedef struct { double value[8]; } tsumarray;
 cudaError_t MyStreamSynchronize(cudaStream_t stream, int situation, int thr_id)
 {
@@ -158,6 +191,27 @@ int cuda_gpu_clocks(struct cgpu_info *gpu)
 		return 0;
 	}
 	return -1;
+}
+
+// if we use 2 threads on the same gpu, we need to reinit the threads
+void cuda_reset_device(int thr_id, bool *init)
+{
+	int dev_id = device_map[thr_id];
+	cudaSetDevice(dev_id);
+	if (init != NULL) {
+		// with init array, its meant to be used in algo's scan code...
+		for (int i=0; i < MAX_GPUS; i++) {
+			if (device_map[i] == dev_id) {
+				init[i] = false;
+			}
+		}
+		// force exit from algo's scan loops/function
+		restart_threads();
+		cudaDeviceSynchronize();
+		while (cudaStreamQuery(NULL) == cudaErrorNotReady)
+			usleep(1000);
+	}
+	cudaDeviceReset();
 }
 
 void cudaReportHardwareFailure(int thr_id, cudaError_t err, const char* func)
