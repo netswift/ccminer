@@ -319,6 +319,7 @@ extern void quark_blake512_cpu_hash_64(int thr_id, uint32_t threads, uint32_t st
 
 extern void quark_groestl512_cpu_init(int thr_id, uint32_t threads);
 extern void quark_groestl512_cpu_hash_64(int thr_id, uint32_t threads, uint32_t startNounce, uint32_t *d_nonceVector, uint32_t *d_hash, int order);
+extern void quark_groestl512_cpu_free(int thr_id);
 
 extern void quark_jh512_cpu_init(int thr_id, uint32_t threads);
 extern void quark_jh512_cpu_hash_64(int thr_id, uint32_t threads, uint32_t startNounce, uint32_t *d_nonceVector, uint32_t *d_hash, int order);
@@ -337,9 +338,9 @@ extern "C" int scanhash_zr5(int thr_id, struct work *work,
 	const uint32_t oldp0 = pdata[0];
 	const uint32_t version = (oldp0 & (~POK_DATA_MASK)) | (use_pok ? POK_BOOL_MASK : 0);
 	const uint32_t first_nonce = pdata[19];
-	uint32_t throughput =  device_intensity(thr_id, __func__, 1U << 18);
+	uint32_t throughput =  cuda_default_throughput(thr_id, 1U << 18);
 	throughput = min(throughput, (1U << 20)-1024);
-	throughput = min(throughput, max_nonce - first_nonce);
+	if (init[thr_id]) throughput = min(throughput, max_nonce - first_nonce);
 
 	if (opt_benchmark)
 		ptarget[7] = 0x0000ff;
@@ -418,6 +419,10 @@ extern "C" int scanhash_zr5(int thr_id, struct work *work,
 		}
 		zr5_final_round(thr_id, throughput);
 
+		// do not scan results on interuption
+		if (work_restart[thr_id].restart)
+			return -1;
+
 		uint32_t foundNonce = cuda_check_hash(thr_id, throughput, pdata[19], d_hash[thr_id]);
 		if (foundNonce != UINT32_MAX)
 		{
@@ -435,6 +440,7 @@ extern "C" int scanhash_zr5(int thr_id, struct work *work,
 			zr5hash(vhash64, pdata);
 			if (vhash64[7] <= ptarget[7] && fulltest(vhash64, ptarget)) {
 				int res = 1;
+				work_set_target_ratio(work, vhash64);
 				uint32_t secNonce = cuda_check_hash_suppl(thr_id, throughput, oldp19, d_hash[thr_id], 1);
 				if (secNonce != 0) {
 					offset = secNonce - oldp19;
@@ -444,6 +450,8 @@ extern "C" int scanhash_zr5(int thr_id, struct work *work,
 					tmpdata[0] = pok; tmpdata[19] = secNonce;
 					zr5hash(vhash64, tmpdata);
 					if (vhash64[7] <= ptarget[7] && fulltest(vhash64, ptarget)) {
+						if (bn_hash_target_ratio(vhash64, ptarget) > work->shareratio)
+							work_set_target_ratio(work, vhash64);
 						pdata[21] = secNonce;
 						pdata[22] = pok;
 						res++;
@@ -451,7 +459,7 @@ extern "C" int scanhash_zr5(int thr_id, struct work *work,
 				}
 				return res;
 			} else {
-				applog(LOG_WARNING, "GPU #%d: result for %08x does not validate on CPU!", device_map[thr_id], foundNonce);
+				gpulog(LOG_WARNING, thr_id, "result for %08x does not validate on CPU!", foundNonce);
 
 				pdata[19]++;
 				pdata[0] = oldp0;
@@ -465,4 +473,32 @@ extern "C" int scanhash_zr5(int thr_id, struct work *work,
 
 	*hashes_done = pdata[19] - first_nonce + 1;
 	return 0;
+}
+
+// cleanup
+extern "C" void free_zr5(int thr_id)
+{
+	if (!init[thr_id])
+		return;
+
+	cudaThreadSynchronize();
+
+	cudaFree(d_hash[thr_id]);
+
+	cudaFree(d_poks[thr_id]);
+	cudaFree(d_permut[thr_id]);
+	cudaFree(d_buffers[thr_id]);
+
+	cudaFree(d_blake[thr_id]);
+	cudaFree(d_groes[thr_id]);
+	cudaFree(d_jh512[thr_id]);
+	cudaFree(d_skein[thr_id]);
+
+	cudaFree(d_txs[thr_id]);
+
+	quark_groestl512_cpu_free(thr_id);
+	cuda_check_cpu_free(thr_id);
+	init[thr_id] = false;
+
+	cudaDeviceSynchronize();
 }

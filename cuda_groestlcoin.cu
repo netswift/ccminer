@@ -99,7 +99,13 @@ void groestlcoin_cpu_init(int thr_id, uint32_t threads)
 	// to check if the binary supports SM3+
 	cuda_get_arch(thr_id);
 
-	cudaMalloc(&d_resultNonce[thr_id], sizeof(uint32_t));
+	CUDA_SAFE_CALL(cudaMalloc(&d_resultNonce[thr_id], sizeof(uint32_t)));
+}
+
+__host__
+void groestlcoin_cpu_free(int thr_id)
+{
+	cudaFree(d_resultNonce[thr_id]);
 }
 
 __host__
@@ -147,7 +153,7 @@ void groestlcoin_cpu_hash(int thr_id, uint32_t threads, uint32_t startNounce, vo
 
 	int dev_id = device_map[thr_id];
 	if (device_sm[dev_id] < 300 || cuda_arch[dev_id] < 300) {
-		printf("Sorry, This algo is not supported by this GPU arch (SM 3.0 required)");
+		gpulog(LOG_ERR, thr_id, "Sorry, This algo is not supported by this GPU arch (SM 3.0 required)");
 		proper_exit(EXIT_CODE_CUDA_ERROR);
 	}
 

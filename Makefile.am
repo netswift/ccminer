@@ -19,7 +19,7 @@ ccminer_SOURCES	= elist.h miner.h compat.h \
 			  compat/inttypes.h compat/stdbool.h compat/unistd.h \
 			  compat/sys/time.h compat/getopt/getopt.h \
 			  crc32.c hefty1.c \
-			  ccminer.cpp pools.cpp util.cpp bignum.cpp \
+			  ccminer.cpp pools.cpp util.cpp bench.cpp bignum.cpp \
 			  api.cpp hashlog.cpp nvml.cpp stats.cpp sysinfos.cpp cuda.cpp \
 			  heavy/heavy.cu \
 			  heavy/cuda_blake512.cu heavy/cuda_blake512.h \
@@ -55,7 +55,7 @@ ccminer_SOURCES	= elist.h miner.h compat.h \
 			  x11/cuda_x11_luffa512_Cubehash.cu \
 			  x13/x13.cu x13/cuda_x13_hamsi512.cu x13/cuda_x13_fugue512.cu \
 			  x15/x14.cu x15/x15.cu x15/cuda_x14_shabal512.cu x15/cuda_x15_whirlpool.cu \
-			  x15/whirlpoolx.cu x15/cuda_whirlpoolx.cu \
+			  x15/whirlpool.cu x15/whirlpoolx.cu x15/cuda_whirlpoolx.cu \
 			  x17/x17.cu x17/cuda_x17_haval512.cu x17/cuda_x17_sha512.cu \
 			  x11/c11.cu x11/s3.cu
 

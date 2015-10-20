@@ -96,6 +96,7 @@ its command line interface and options.
                           x14         use to mine X14Coin
                           x15         use to mine Halcyon
                           x17         use to mine X17
+                          whirlpool   use to mine Joincoin
                           whirlpoolx  use to mine Vanilla
                           zr5         use to mine ZiftrCoin
 
@@ -106,6 +107,7 @@ its command line interface and options.
 
   -i, --intensity=N[,N] GPU threads per call 8-25 (2^N + F, default: 0=auto)
                         Decimals and multiple values are allowed for fine tuning
+      --cuda-schedule   Set device threads scheduling mode (default: auto)
   -f, --diff-factor     Divide difficulty by this factor (default 1.0)
   -m, --diff-multiplier Multiply difficulty by this value (default 1.0)
       --vote=VOTE       block reward vote (for HeavyCoin)
@@ -141,6 +143,7 @@ its command line interface and options.
       --pstate=0        will force the Geforce 9xx to run in P0 P-State
       --plimit=150W     set the gpu power limit, allow multiple values for N cards
       --keep-clocks     prevent reset clocks and/or power limit on exit
+      --show-diff       display submitted block and net difficulty
   -B, --background      run the miner in the background
       --benchmark       run in offline benchmark mode
       --cputest         debug hashes from cpu algorithms
@@ -224,6 +227,16 @@ so we can more efficiently implement new algorithms using the latest hardware
 features.
 
 >>> RELEASE HISTORY <<<
+
+  Under Dev...    v1.7
+                  Add windows support for SM 2.1 and drop SM 3.5 (x86)
+                  Improve lyra2 (v1/v2) cuda implementation
+                  Restore whirlpool algo (and whirlcoin variant)
+                  Prepare algo switch ability
+                  Add --benchmark alone to run a benchmark for all algos
+                  Add --cuda-schedule parameter
+                  Add --show-diff parameter, which display shares diff,
+                    and is able to detect real solved blocks on pools.
 
   Aug. 28th 2015  v1.6.6
                   Allow to load remote config with curl (-c http://...)

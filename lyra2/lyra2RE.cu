@@ -10,20 +10,23 @@ extern "C" {
 #include "cuda_helper.h"
 
 static uint64_t* d_hash[MAX_GPUS];
-//static uint64_t* d_hash2[MAX_GPUS];
+static uint64_t* d_matrix[MAX_GPUS];
 
 extern void blake256_cpu_init(int thr_id, uint32_t threads);
 extern void blake256_cpu_hash_80(const int thr_id, const uint32_t threads, const uint32_t startNonce, uint64_t *Hash, int order);
 extern void blake256_cpu_setBlock_80(uint32_t *pdata);
+
 extern void keccak256_cpu_hash_32(int thr_id, uint32_t threads, uint32_t startNonce, uint64_t *d_outputHash, int order);
 extern void keccak256_cpu_init(int thr_id, uint32_t threads);
+extern void keccak256_cpu_free(int thr_id);
 extern void skein256_cpu_hash_32(int thr_id, uint32_t threads, uint32_t startNonce, uint64_t *d_outputHash, int order);
 extern void skein256_cpu_init(int thr_id, uint32_t threads);
 
-//extern void lyra2_cpu_init(int thr_id, uint32_t threads, uint64_t *hash);
+extern void lyra2_cpu_init(int thr_id, uint32_t threads, uint64_t *d_matrix);
 extern void lyra2_cpu_hash_32(int thr_id, uint32_t threads, uint32_t startNonce, uint64_t *d_outputHash, int order);
 
 extern void groestl256_cpu_init(int thr_id, uint32_t threads);
+extern void groestl256_cpu_free(int thr_id);
 extern void groestl256_setTarget(const void *ptarget);
 extern uint32_t groestl256_cpu_hash_32(int thr_id, uint32_t threads, uint32_t startNounce, uint64_t *d_outputHash, int order);
 extern uint32_t groestl256_getSecNonce(int thr_id, int num);
@@ -45,12 +48,14 @@ extern uint32_t groestl256_getSecNonce(int thr_id, int num);
 
 extern "C" void lyra2re_hash(void *state, const void *input)
 {
+	uint32_t hashA[8], hashB[8];
+
 	sph_blake256_context     ctx_blake;
 	sph_keccak256_context    ctx_keccak;
 	sph_skein256_context     ctx_skein;
 	sph_groestl256_context   ctx_groestl;
 
-	uint32_t hashA[8], hashB[8];
+	sph_blake256_set_rounds(14);
 
 	sph_blake256_init(&ctx_blake);
 	sph_blake256(&ctx_blake, input, 80);
@@ -75,21 +80,22 @@ extern "C" void lyra2re_hash(void *state, const void *input)
 
 static bool init[MAX_GPUS] = { 0 };
 
-extern "C" int scanhash_lyra2(int thr_id, uint32_t *pdata,
-	const uint32_t *ptarget, uint32_t max_nonce,
-	unsigned long *hashes_done)
+extern "C" int scanhash_lyra2(int thr_id, struct work* work, uint32_t max_nonce, unsigned long *hashes_done)
 {
+	uint32_t *pdata = work->data;
+	uint32_t *ptarget = work->target;
 	const uint32_t first_nonce = pdata[19];
-	int intensity = (device_sm[device_map[thr_id]] >= 500 && !is_windows()) ? 18 : 17;
-	uint32_t throughput = device_intensity(thr_id, __func__, 1U << intensity); // 18=256*256*4;
-	throughput = min(throughput, max_nonce - first_nonce);
+	int intensity = (device_sm[device_map[thr_id]] >= 500 && !is_windows()) ? 17 : 16;
+	uint32_t throughput = cuda_default_throughput(thr_id, 1U << intensity); // 18=256*256*4;
+	if (init[thr_id]) throughput = min(throughput, max_nonce - first_nonce);
 
 	if (opt_benchmark)
-		((uint32_t*)ptarget)[7] = 0x00ff;
+		ptarget[7] = 0x000f;
 
 	if (!init[thr_id])
 	{
 		cudaSetDevice(device_map[thr_id]);
+		CUDA_LOG_ERROR();
 
 		blake256_cpu_init(thr_id, throughput);
 		keccak256_cpu_init(thr_id,throughput);
@@ -97,15 +103,15 @@ extern "C" int scanhash_lyra2(int thr_id, uint32_t *pdata,
 		groestl256_cpu_init(thr_id, throughput);
 
 		// DMatrix
-//		cudaMalloc(&d_hash2[thr_id], (size_t)16 * 8 * 8 * sizeof(uint64_t) * throughput);
-//		lyra2_cpu_init(thr_id, throughput, d_hash2[thr_id]);
+		cudaMalloc(&d_matrix[thr_id], (size_t)16 * 8 * 8 * sizeof(uint64_t) * throughput);
+		lyra2_cpu_init(thr_id, throughput, d_matrix[thr_id]);
 
 		CUDA_SAFE_CALL(cudaMalloc(&d_hash[thr_id], (size_t)32 * throughput));
 
 		init[thr_id] = true;
 	}
 
-	uint32_t endiandata[20];
+	uint32_t _ALIGN(128) endiandata[20];
 	for (int k=0; k < 20; k++)
 		be32enc(&endiandata[k], pdata[k]);
 
@@ -135,13 +141,16 @@ extern "C" int scanhash_lyra2(int thr_id, uint32_t *pdata,
 			if (vhash64[7] <= ptarget[7] && fulltest(vhash64, ptarget)) {
 				int res = 1;
 				uint32_t secNonce = groestl256_getSecNonce(thr_id, 1);
+				work_set_target_ratio(work, vhash64);
 				if (secNonce != UINT32_MAX)
 				{
 					be32enc(&endiandata[19], secNonce);
 					lyra2re_hash(vhash64, endiandata);
 					if (vhash64[7] <= ptarget[7] && fulltest(vhash64, ptarget)) {
 						if (opt_debug)
-							applog(LOG_BLUE, "GPU #%d: found second nonce %08x", device_map[thr_id], secNonce);
+							gpulog(LOG_BLUE, thr_id, "found second nonce %08x", secNonce);
+						if (bn_hash_target_ratio(vhash64, ptarget) > work->shareratio)
+							work_set_target_ratio(work, vhash64);
 						pdata[21] = secNonce;
 						res++;
 					}
@@ -149,7 +158,7 @@ extern "C" int scanhash_lyra2(int thr_id, uint32_t *pdata,
 				pdata[19] = foundNonce;
 				return res;
 			} else {
-				applog(LOG_WARNING, "GPU #%d: result for %08x does not validate on CPU!", device_map[thr_id], foundNonce);
+				gpulog(LOG_WARNING, thr_id, "result for %08x does not validate on CPU!", foundNonce);
 			}
 		}
 
@@ -158,4 +167,23 @@ extern "C" int scanhash_lyra2(int thr_id, uint32_t *pdata,
 	} while (pdata[19] < max_nonce && !work_restart[thr_id].restart);
 
 	return 0;
+}
+
+// cleanup
+extern "C" void free_lyra2(int thr_id)
+{
+	if (!init[thr_id])
+		return;
+
+	cudaThreadSynchronize();
+
+	cudaFree(d_hash[thr_id]);
+	cudaFree(d_matrix[thr_id]);
+
+	keccak256_cpu_free(thr_id);
+	groestl256_cpu_free(thr_id);
+
+	init[thr_id] = false;
+
+	cudaDeviceSynchronize();
 }

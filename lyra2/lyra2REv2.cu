@@ -11,23 +11,25 @@ extern "C" {
 #include "cuda_helper.h"
 
 
-static _ALIGN(64) uint64_t *d_hash[MAX_GPUS];
-static uint64_t *d_hash2[MAX_GPUS];
+static uint64_t *d_hash[MAX_GPUS];
+static uint64_t* d_matrix[MAX_GPUS];
 
 extern void blake256_cpu_init(int thr_id, uint32_t threads);
 extern void blake256_cpu_hash_80(const int thr_id, const uint32_t threads, const uint32_t startNonce, uint64_t *Hash, int order);
 extern void blake256_cpu_setBlock_80(uint32_t *pdata);
 extern void keccak256_cpu_hash_32(int thr_id, uint32_t threads, uint32_t startNonce, uint64_t *d_outputHash, int order);
 extern void keccak256_cpu_init(int thr_id, uint32_t threads);
+extern void keccak256_cpu_free(int thr_id);
 extern void skein256_cpu_hash_32(int thr_id, uint32_t threads, uint32_t startNonce, uint64_t *d_outputHash, int order);
 extern void skein256_cpu_init(int thr_id, uint32_t threads);
 extern void cubehash256_cpu_hash_32(int thr_id, uint32_t threads, uint32_t startNounce, uint64_t *d_hash, int order);
 
 extern void lyra2v2_cpu_hash_32(int thr_id, uint32_t threads, uint32_t startNonce, uint64_t *d_outputHash, int order);
-extern void lyra2v2_cpu_init(int thr_id, uint32_t threads, uint64_t* matrix);
+extern void lyra2v2_cpu_init(int thr_id, uint32_t threads, uint64_t* d_matrix);
 
 extern void bmw256_setTarget(const void *ptarget);
 extern void bmw256_cpu_init(int thr_id, uint32_t threads);
+extern void bmw256_cpu_free(int thr_id);
 extern void bmw256_cpu_hash_32(int thr_id, uint32_t threads, uint32_t startNounce, uint64_t *g_hash, uint32_t *resultnonces);
 
 void lyra2v2_hash(void *state, const void *input)
@@ -39,6 +41,8 @@ void lyra2v2_hash(void *state, const void *input)
 	sph_skein256_context      ctx_skein;
 	sph_bmw256_context        ctx_bmw;
 	sph_cubehash256_context   ctx_cube;
+
+	sph_blake256_set_rounds(14);
 
 	sph_blake256_init(&ctx_blake);
 	sph_blake256(&ctx_blake, input, 80);
@@ -71,47 +75,51 @@ void lyra2v2_hash(void *state, const void *input)
 
 static bool init[MAX_GPUS] = { 0 };
 
-extern "C" int scanhash_lyra2v2(int thr_id, uint32_t *pdata,
-	const uint32_t *ptarget, uint32_t max_nonce,
-	unsigned long *hashes_done)
+extern "C" int scanhash_lyra2v2(int thr_id, struct work* work, uint32_t max_nonce, unsigned long *hashes_done)
 {
+	uint32_t *pdata = work->data;
+	uint32_t *ptarget = work->target;
 	const uint32_t first_nonce = pdata[19];
-	int intensity = (device_sm[device_map[thr_id]] > 500 && !is_windows()) ? 18 : 17;
-	unsigned int defthr = 1U << intensity;
-	uint32_t throughput = device_intensity(device_map[thr_id], __func__, defthr);
+	int dev_id = device_map[thr_id];
+	int intensity = (device_sm[dev_id] > 500 && !is_windows()) ? 20 : 18;
+	uint32_t throughput = cuda_default_throughput(dev_id, 1UL << intensity);
+	if (init[thr_id]) throughput = min(throughput, max_nonce - first_nonce);
 
 	if (opt_benchmark)
-		((uint32_t*)ptarget)[7] = 0x00ff;
+		ptarget[7] = 0x000f;
 
 	if (!init[thr_id])
 	{
-		cudaSetDevice(device_map[thr_id]);
+		cudaSetDevice(dev_id);
 		//cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync);
-		//if (opt_n_gputhreads == 1)
+		//if (gpu_threads == 1)
 		//	cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
+		CUDA_LOG_ERROR();
+
 		blake256_cpu_init(thr_id, throughput);
 		keccak256_cpu_init(thr_id,throughput);
 		skein256_cpu_init(thr_id, throughput);
 		bmw256_cpu_init(thr_id, throughput);
+		CUDA_LOG_ERROR();
 
-		if (device_sm[device_map[thr_id]] < 300) {
+		// DMatrix (780Ti may prefer 16 instead of 12, cf djm34)
+		CUDA_SAFE_CALL(cudaMalloc(&d_matrix[thr_id], (size_t)12 * sizeof(uint64_t) * 4 * 4 * throughput));
+		lyra2v2_cpu_init(thr_id, throughput, d_matrix[thr_id]);
+
+		CUDA_SAFE_CALL(cudaMalloc(&d_hash[thr_id], (size_t)32 * throughput));
+
+		if (device_sm[dev_id] < 300) {
 			applog(LOG_ERR, "Device SM 3.0 or more recent required!");
 			proper_exit(1);
 			return -1;
 		}
-
-		// DMatrix
-		CUDA_SAFE_CALL(cudaMalloc(&d_hash2[thr_id], 16 * 4 * 4 * sizeof(uint64_t) * throughput));
-		lyra2v2_cpu_init(thr_id, throughput, d_hash2[thr_id]);
-
-		CUDA_SAFE_CALL(cudaMalloc(&d_hash[thr_id], (size_t)throughput * 32));
 
 		init[thr_id] = true;
 	}
 
 	uint32_t endiandata[20];
 	for (int k=0; k < 20; k++)
-		be32enc(&endiandata[k], ((uint32_t*)pdata)[k]);
+		be32enc(&endiandata[k], pdata[k]);
 
 	blake256_cpu_setBlock_80(pdata);
 	bmw256_setTarget(ptarget);
@@ -129,30 +137,35 @@ extern "C" int scanhash_lyra2v2(int thr_id, uint32_t *pdata,
 
 		bmw256_cpu_hash_32(thr_id, throughput, pdata[19], d_hash[thr_id], foundNonces);
 
+		*hashes_done = pdata[19] - first_nonce + throughput;
+
 		if (foundNonces[0] != 0)
 		{
-			const uint32_t Htarg = ptarget[7];
 			uint32_t vhash64[8];
 			be32enc(&endiandata[19], foundNonces[0]);
 			lyra2v2_hash(vhash64, endiandata);
-			if (vhash64[7] <= Htarg && fulltest(vhash64, ptarget))
+			if (vhash64[7] <= ptarget[7] && fulltest(vhash64, ptarget))
 			{
 				int res = 1;
+				work_set_target_ratio(work, vhash64);
+				pdata[19] = foundNonces[0];
 				// check if there was another one...
-				*hashes_done = pdata[19] - first_nonce + throughput;
 				if (foundNonces[1] != 0)
 				{
+					be32enc(&endiandata[19], foundNonces[1]);
+					lyra2v2_hash(vhash64, endiandata);
 					pdata[21] = foundNonces[1];
+					if (bn_hash_target_ratio(vhash64, ptarget) > work->shareratio) {
+						work_set_target_ratio(work, vhash64);
+						xchg(pdata[19], pdata[21]);
+					}
 					res++;
 				}
-				pdata[19] = foundNonces[0];
-				MyStreamSynchronize(NULL, 0, device_map[thr_id]);
 				return res;
 			}
 			else
 			{
-				if (vhash64[7] > Htarg) // don't show message if it is equal but fails fulltest
-					applog(LOG_WARNING, "GPU #%d: result does not validate on CPU!", thr_id);
+				gpulog(LOG_WARNING, thr_id, "result for %08x does not validate on CPU!", foundNonces[0]);
 			}
 		}
 
@@ -161,6 +174,24 @@ extern "C" int scanhash_lyra2v2(int thr_id, uint32_t *pdata,
 	} while (!work_restart[thr_id].restart && (max_nonce > ((uint64_t)(pdata[19]) + throughput)));
 
 	*hashes_done = pdata[19] - first_nonce + 1;
-	MyStreamSynchronize(NULL, 0, device_map[thr_id]);
 	return 0;
+}
+
+// cleanup
+extern "C" void free_lyra2v2(int thr_id)
+{
+	if (!init[thr_id])
+		return;
+
+	cudaThreadSynchronize();
+
+	cudaFree(d_hash[thr_id]);
+	cudaFree(d_matrix[thr_id]);
+
+	bmw256_cpu_free(thr_id);
+	keccak256_cpu_free(thr_id);
+
+	init[thr_id] = false;
+
+	cudaDeviceSynchronize();
 }

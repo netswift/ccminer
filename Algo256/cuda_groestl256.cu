@@ -7,6 +7,7 @@
 
 static uint32_t *h_GNonces[MAX_GPUS];
 static uint32_t *d_GNonces[MAX_GPUS];
+static unsigned int* d_textures[MAX_GPUS][8];
 
 __constant__ uint32_t pTarget[8];
 
@@ -66,14 +67,14 @@ __constant__ uint32_t pTarget[8];
 	#define T3dn(x) tex1Dfetch(t3dn2, x)
 #endif
 
-texture<unsigned int, 1, cudaReadModeElementType> t0up2;
-texture<unsigned int, 1, cudaReadModeElementType> t0dn2;
-texture<unsigned int, 1, cudaReadModeElementType> t1up2;
-texture<unsigned int, 1, cudaReadModeElementType> t1dn2;
-texture<unsigned int, 1, cudaReadModeElementType> t2up2;
-texture<unsigned int, 1, cudaReadModeElementType> t2dn2;
-texture<unsigned int, 1, cudaReadModeElementType> t3up2;
-texture<unsigned int, 1, cudaReadModeElementType> t3dn2;
+static texture<unsigned int, 1, cudaReadModeElementType> t0up2;
+static texture<unsigned int, 1, cudaReadModeElementType> t0dn2;
+static texture<unsigned int, 1, cudaReadModeElementType> t1up2;
+static texture<unsigned int, 1, cudaReadModeElementType> t1dn2;
+static texture<unsigned int, 1, cudaReadModeElementType> t2up2;
+static texture<unsigned int, 1, cudaReadModeElementType> t2dn2;
+static texture<unsigned int, 1, cudaReadModeElementType> t3up2;
+static texture<unsigned int, 1, cudaReadModeElementType> t3dn2;
 
 #define RSTT(d0, d1, a, b0, b1, b2, b3, b4, b5, b6, b7) do { \
 	t[d0] = T0up(B32_0(a[b0])) \
@@ -175,7 +176,7 @@ void groestl256_perm_Q(uint32_t thread, uint32_t *a, char *mixtabs)
 }
 
 __global__ __launch_bounds__(256,1)
-void groestl256_gpu_hash32(uint32_t threads, uint32_t startNounce, uint64_t *outputHash, uint32_t *resNonces)
+void groestl256_gpu_hash_32(uint32_t threads, uint32_t startNounce, uint64_t *outputHash, uint32_t *resNonces)
 {
 #if USE_SHARED
 	extern __shared__ char mixtabs[];
@@ -249,32 +250,53 @@ void groestl256_gpu_hash32(uint32_t threads, uint32_t startNounce, uint64_t *out
 	}
 }
 
-#define texDef(texname, texmem, texsource, texsize) \
+#define texDef(id, texname, texmem, texsource, texsize) { \
 	unsigned int *texmem; \
 	cudaMalloc(&texmem, texsize); \
+	d_textures[thr_id][id] = texmem; \
 	cudaMemcpy(texmem, texsource, texsize, cudaMemcpyHostToDevice); \
 	texname.normalized = 0; \
 	texname.filterMode = cudaFilterModePoint; \
 	texname.addressMode[0] = cudaAddressModeClamp; \
 	{ cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<unsigned int>(); \
-	  cudaBindTexture(NULL, &texname, texmem, &channelDesc, texsize ); } \
+	  cudaBindTexture(NULL, &texname, texmem, &channelDesc, texsize ); \
+	} \
+}
 
 __host__
 void groestl256_cpu_init(int thr_id, uint32_t threads)
 {
-
 	// Texturen mit obigem Makro initialisieren
-	texDef(t0up2, d_T0up, T0up_cpu, sizeof(uint32_t) * 256);
-	texDef(t0dn2, d_T0dn, T0dn_cpu, sizeof(uint32_t) * 256);
-	texDef(t1up2, d_T1up, T1up_cpu, sizeof(uint32_t) * 256);
-	texDef(t1dn2, d_T1dn, T1dn_cpu, sizeof(uint32_t) * 256);
-	texDef(t2up2, d_T2up, T2up_cpu, sizeof(uint32_t) * 256);
-	texDef(t2dn2, d_T2dn, T2dn_cpu, sizeof(uint32_t) * 256);
-	texDef(t3up2, d_T3up, T3up_cpu, sizeof(uint32_t) * 256);
-	texDef(t3dn2, d_T3dn, T3dn_cpu, sizeof(uint32_t) * 256);
+	texDef(0, t0up2, d_T0up, T0up_cpu, sizeof(uint32_t) * 256);
+	texDef(1, t0dn2, d_T0dn, T0dn_cpu, sizeof(uint32_t) * 256);
+	texDef(2, t1up2, d_T1up, T1up_cpu, sizeof(uint32_t) * 256);
+	texDef(3, t1dn2, d_T1dn, T1dn_cpu, sizeof(uint32_t) * 256);
+	texDef(4, t2up2, d_T2up, T2up_cpu, sizeof(uint32_t) * 256);
+	texDef(5, t2dn2, d_T2dn, T2dn_cpu, sizeof(uint32_t) * 256);
+	texDef(6, t3up2, d_T3up, T3up_cpu, sizeof(uint32_t) * 256);
+	texDef(7, t3dn2, d_T3dn, T3dn_cpu, sizeof(uint32_t) * 256);
 
 	cudaMalloc(&d_GNonces[thr_id], 2*sizeof(uint32_t));
 	cudaMallocHost(&h_GNonces[thr_id], 2*sizeof(uint32_t));
+}
+
+__host__
+void groestl256_cpu_free(int thr_id)
+{
+	cudaUnbindTexture(t0up2);
+	cudaUnbindTexture(t0dn2);
+	cudaUnbindTexture(t1up2);
+	cudaUnbindTexture(t1dn2);
+	cudaUnbindTexture(t2up2);
+	cudaUnbindTexture(t2dn2);
+	cudaUnbindTexture(t3up2);
+	cudaUnbindTexture(t3dn2);
+
+	for (int i=0; i<8; i++)
+		cudaFree(d_textures[thr_id][i]);
+
+	cudaFree(d_GNonces[thr_id]);
+	cudaFreeHost(h_GNonces[thr_id]);
 }
 
 __host__
@@ -293,7 +315,7 @@ uint32_t groestl256_cpu_hash_32(int thr_id, uint32_t threads, uint32_t startNoun
 #else
 	size_t shared_size = 0;
 #endif
-	groestl256_gpu_hash32<<<grid, block, shared_size>>>(threads, startNounce, d_outputHash, d_GNonces[thr_id]);
+	groestl256_gpu_hash_32<<<grid, block, shared_size>>>(threads, startNounce, d_outputHash, d_GNonces[thr_id]);
 
 	MyStreamSynchronize(NULL, order, thr_id);
 

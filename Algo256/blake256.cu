@@ -10,15 +10,14 @@
 
 extern "C" {
 #include "sph/sph_blake.h"
+//extern int blake256_rounds;
+}
+
 #include <stdint.h>
 #include <memory.h>
-}
 
 /* threads per block and throughput (intensity) */
 #define TPB 128
-
-/* added in sph_blake.c */
-extern "C" int blake256_rounds = 14;
 
 /* hash by cpu with blake 256 */
 extern "C" void blake256hash(void *output, const void *input, int8_t rounds = 14)
@@ -26,7 +25,7 @@ extern "C" void blake256hash(void *output, const void *input, int8_t rounds = 14
 	uchar hash[64];
 	sph_blake256_context ctx;
 
-	blake256_rounds = rounds;
+	sph_blake256_set_rounds(rounds);
 
 	sph_blake256_init(&ctx);
 	sph_blake256(&ctx, input, 80);
@@ -356,8 +355,7 @@ static void blake256mid(uint32_t *output, const uint32_t *input, int8_t rounds =
 {
 	sph_blake256_context ctx;
 
-	/* in sph_blake.c */
-	blake256_rounds = rounds;
+	sph_blake256_set_rounds(rounds);
 
 	sph_blake256_init(&ctx);
 	sph_blake256(&ctx, input, 64);
@@ -379,26 +377,28 @@ void blake256_cpu_setBlock_16(uint32_t *penddata, const uint32_t *midstate, cons
 
 static bool init[MAX_GPUS] = { 0 };
 
-extern "C" int scanhash_blake256(int thr_id, uint32_t *pdata, const uint32_t *ptarget,
-	uint32_t max_nonce, unsigned long *hashes_done, int8_t blakerounds=14)
+extern "C" int scanhash_blake256(int thr_id, struct work* work, uint32_t max_nonce, unsigned long *hashes_done, int8_t blakerounds=14)
 {
-	const uint32_t first_nonce = pdata[19];
-	uint64_t targetHigh = ((uint64_t*)ptarget)[3];
 	uint32_t _ALIGN(64) endiandata[20];
 #if PRECALC64
 	uint32_t _ALIGN(64) midstate[8];
 #else
 	uint32_t crcsum;
 #endif
+	uint32_t *pdata = work->data;
+	uint32_t *ptarget = work->target;
+	const uint32_t first_nonce = pdata[19];
+	uint64_t targetHigh = ((uint64_t*)ptarget)[3];
 	int intensity = (device_sm[device_map[thr_id]] > 500) ? 22 : 20;
-	uint32_t throughput = device_intensity(thr_id, __func__, 1U << intensity);
-	throughput = min(throughput, max_nonce - first_nonce);
+	uint32_t throughput = cuda_default_throughput(thr_id, 1U << intensity);
+	if (init[thr_id]) throughput = min(throughput, max_nonce - first_nonce);
 
 	int rc = 0;
 
 	if (opt_benchmark) {
-		targetHigh = 0x1ULL << 32;
-		((uint32_t*)ptarget)[6] = swab32(0xff);
+		ptarget[7] = 0;
+		ptarget[6] = swab32(0xff);
+		targetHigh = 0xffULL << 32;
 	}
 
 	if (opt_tracegpu) {
@@ -409,10 +409,12 @@ extern "C" int scanhash_blake256(int thr_id, uint32_t *pdata, const uint32_t *pt
 	}
 
 	if (!init[thr_id]) {
-		if (active_gpus > 1)
-			cudaSetDevice(device_map[thr_id]);
-		CUDA_CALL_OR_RET_X(cudaMallocHost(&h_resNonce[thr_id], NBN * sizeof(uint32_t)), 0);
-		CUDA_CALL_OR_RET_X(cudaMalloc(&d_resNonce[thr_id], NBN * sizeof(uint32_t)), 0);
+		cudaSetDevice(device_map[thr_id]);
+		CUDA_LOG_ERROR();
+
+		cudaMallocHost(&h_resNonce[thr_id], NBN * sizeof(uint32_t));
+		cudaMalloc(&d_resNonce[thr_id], NBN * sizeof(uint32_t));
+		CUDA_LOG_ERROR();
 		init[thr_id] = true;
 	}
 
@@ -435,6 +437,8 @@ extern "C" int scanhash_blake256(int thr_id, uint32_t *pdata, const uint32_t *pt
 		// GPU FULL HASH
 		blake256_cpu_hash_80(thr_id, throughput, pdata[19], targetHigh, crcsum, blakerounds);
 #endif
+		*hashes_done = pdata[19] - first_nonce + throughput;
+
 		if (foundNonce != UINT32_MAX)
 		{
 			uint32_t vhashcpu[8];
@@ -446,33 +450,31 @@ extern "C" int scanhash_blake256(int thr_id, uint32_t *pdata, const uint32_t *pt
 			be32enc(&endiandata[19], foundNonce);
 			blake256hash(vhashcpu, endiandata, blakerounds);
 
-			//applog(LOG_BLUE, "%08x %16llx", vhashcpu[6], targetHigh);
 			if (vhashcpu[6] <= Htarg && fulltest(vhashcpu, ptarget))
 			{
 				rc = 1;
+				work_set_target_ratio(work, vhashcpu);
 				pdata[19] = foundNonce;
-				*hashes_done = pdata[19] - first_nonce + 1;
 #if NBN > 1
 				if (extra_results[0] != UINT32_MAX) {
 					be32enc(&endiandata[19], extra_results[0]);
 					blake256hash(vhashcpu, endiandata, blakerounds);
-					if (vhashcpu[6] <= Htarg /* && fulltest(vhashcpu, ptarget) */) {
+					if (vhashcpu[6] <= Htarg && fulltest(vhashcpu, ptarget)) {
 						pdata[21] = extra_results[0];
 						applog(LOG_BLUE, "1:%x 2:%x", foundNonce, extra_results[0]);
-						*hashes_done = max(*hashes_done, extra_results[0] - first_nonce + 1);
+						if (bn_hash_target_ratio(vhashcpu, ptarget) > work->shareratio)
+							work_set_target_ratio(work, vhashcpu);
 						rc = 2;
 					}
 					extra_results[0] = UINT32_MAX;
 				}
 #endif
-				//applog_hash((uint8_t*)ptarget);
-				//applog_compare_hash((uint8_t*)vhashcpu,(uint8_t*)ptarget);
 				return rc;
 			}
-			else if (opt_debug) {
+			else if (vhashcpu[7] > ptarget[7] && opt_debug) {
 				applog_hash((uchar*)ptarget);
 				applog_compare_hash((uchar*)vhashcpu, (uchar*)ptarget);
-				applog(LOG_WARNING, "GPU #%d: result for nonce %08x does not validate on CPU!", device_map[thr_id], foundNonce);
+				gpulog(LOG_WARNING, thr_id, "result for %08x does not validate on CPU!", foundNonce);
 			}
 		}
 
@@ -487,4 +489,20 @@ extern "C" int scanhash_blake256(int thr_id, uint32_t *pdata, const uint32_t *pt
 	*hashes_done = pdata[19] - first_nonce;
 
 	return rc;
+}
+
+// cleanup
+extern "C" void free_blake256(int thr_id)
+{
+	if (!init[thr_id])
+		return;
+
+	cudaThreadSynchronize();
+
+	cudaFreeHost(h_resNonce[thr_id]);
+	cudaFree(d_resNonce[thr_id]);
+
+	init[thr_id] = false;
+
+	cudaDeviceSynchronize();
 }

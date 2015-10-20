@@ -8,6 +8,7 @@
 #include "miner.h"
 
 void myriadgroestl_cpu_init(int thr_id, uint32_t threads);
+void myriadgroestl_cpu_free(int thr_id);
 void myriadgroestl_cpu_setBlock(int thr_id, void *data, void *pTargetIn);
 void myriadgroestl_cpu_hash(int thr_id, uint32_t threads, uint32_t startNounce, void *outputHashes, uint32_t *nounce);
 
@@ -30,13 +31,14 @@ void myriadhash(void *state, const void *input)
 
 static bool init[MAX_GPUS] = { 0 };
 
-int scanhash_myriad(int thr_id, uint32_t *pdata, const uint32_t *ptarget,
-	uint32_t max_nonce, unsigned long *hashes_done)
+int scanhash_myriad(int thr_id, struct work *work, uint32_t max_nonce, unsigned long *hashes_done)
 {
 	uint32_t _ALIGN(64) endiandata[32];
+	uint32_t *pdata = work->data;
+	uint32_t *ptarget = work->target;
 	uint32_t start_nonce = pdata[19];
-	uint32_t throughput = device_intensity(thr_id, __func__, 1 << 17);
-	throughput = min(throughput, max_nonce - start_nonce);
+	uint32_t throughput = cuda_default_throughput(thr_id, 1U << 17);
+	if (init[thr_id]) throughput = min(throughput, max_nonce - start_nonce);
 
 	uint32_t *outputHash = (uint32_t*)malloc(throughput * 64);
 
@@ -67,16 +69,16 @@ int scanhash_myriad(int thr_id, uint32_t *pdata, const uint32_t *ptarget,
 
 		if (foundNounce < UINT32_MAX)
 		{
-			uint32_t _ALIGN(64) tmpHash[8];
+			uint32_t _ALIGN(64) vhash[8];
 			endiandata[19] = swab32(foundNounce);
-			myriadhash(tmpHash, endiandata);
-			if (tmpHash[7] <= ptarget[7] && fulltest(tmpHash, ptarget)) {
+			myriadhash(vhash, endiandata);
+			if (vhash[7] <= ptarget[7] && fulltest(vhash, ptarget)) {
+				work_set_target_ratio(work, vhash);
 				pdata[19] = foundNounce;
 				free(outputHash);
 				return 1;
 			} else {
-				applog(LOG_WARNING, "GPU #%d: result for nonce %08x does not validate on CPU!",
-					device_map[thr_id], foundNounce);
+				gpulog(LOG_WARNING, thr_id, "result for %08x does not validate on CPU!", foundNounce);
 			}
 		}
 
@@ -93,3 +95,16 @@ int scanhash_myriad(int thr_id, uint32_t *pdata, const uint32_t *ptarget,
 	return 0;
 }
 
+// cleanup
+void free_myriad(int thr_id)
+{
+	if (!init[thr_id])
+		return;
+
+	cudaThreadSynchronize();
+
+	myriadgroestl_cpu_free(thr_id);
+	init[thr_id] = false;
+
+	cudaDeviceSynchronize();
+}

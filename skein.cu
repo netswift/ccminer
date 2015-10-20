@@ -11,12 +11,14 @@
 #include <openssl/sha.h>
 
 static uint32_t *d_hash[MAX_GPUS];
+static __thread bool sm5 = true;
 
 extern void quark_skein512_cpu_init(int thr_id, uint32_t threads);
 extern void skein512_cpu_setBlock_80(void *pdata);
 extern void skein512_cpu_hash_80(int thr_id, uint32_t threads, uint32_t startNounce, uint32_t *d_hash, int swap);
 
 extern void skeincoin_init(int thr_id);
+extern void skeincoin_free(int thr_id);
 extern void skeincoin_setBlock_80(int thr_id, void *pdata);
 extern uint32_t skeincoin_hash_sm5(int thr_id, uint32_t threads, uint32_t startNounce, int swap, uint64_t target64, uint32_t *secNonce);
 
@@ -346,22 +348,23 @@ static __inline uint32_t swab32_if(uint32_t val, bool iftrue) {
 
 static bool init[MAX_GPUS] = { 0 };
 
-extern "C" int scanhash_skeincoin(int thr_id, uint32_t *pdata, const uint32_t *ptarget,
-	uint32_t max_nonce, unsigned long *hashes_done)
+extern "C" int scanhash_skeincoin(int thr_id, struct work* work, uint32_t max_nonce, unsigned long *hashes_done)
 {
 	uint32_t _ALIGN(64) endiandata[20];
+	uint32_t *pdata = work->data;
+	uint32_t *ptarget = work->target;
 
 	const uint32_t first_nonce = pdata[19];
 	const int swap = 1;
 
-	bool sm5 = (device_sm[device_map[thr_id]] >= 500);
+	sm5 = (device_sm[device_map[thr_id]] >= 500);
 	bool checkSecnonce = (have_stratum || have_longpoll) && !sm5;
 
-	uint32_t throughput = device_intensity(thr_id, __func__, 1U << 20);
-	throughput = min(throughput, (max_nonce - first_nonce));
+	uint32_t throughput = cuda_default_throughput(thr_id, 1U << 20);
+	if (init[thr_id]) throughput = min(throughput, (max_nonce - first_nonce));
 
 	uint32_t foundNonce, secNonce = 0;
-	uint64_t target64;
+	uint64_t target64 = 0;
 
 	if (opt_benchmark)
 		((uint32_t*)ptarget)[7] = 0x03;
@@ -373,7 +376,7 @@ extern "C" int scanhash_skeincoin(int thr_id, uint32_t *pdata, const uint32_t *p
 		if (sm5) {
 			skeincoin_init(thr_id);
 		} else {
-			cudaMalloc(&d_hash[thr_id], throughput * 64U);
+			cudaMalloc(&d_hash[thr_id], (size_t) 64 * throughput);
 			quark_skein512_cpu_init(thr_id, throughput);
 			cuda_check_cpu_init(thr_id, throughput);
 			CUDA_SAFE_CALL(cudaDeviceSynchronize());
@@ -409,23 +412,28 @@ extern "C" int scanhash_skeincoin(int thr_id, uint32_t *pdata, const uint32_t *p
 
 		if (foundNonce != UINT32_MAX)
 		{
-			uint32_t _ALIGN(64) vhash64[8];
+			uint32_t _ALIGN(64) vhash[8];
 
 			endiandata[19] = swab32_if(foundNonce, swap);
-			skeincoinhash(vhash64, endiandata);
+			skeincoinhash(vhash, endiandata);
 
-			if (vhash64[7] <= ptarget[7] && fulltest(vhash64, ptarget)) {
+			if (vhash[7] <= ptarget[7] && fulltest(vhash, ptarget)) {
 				int res = 1;
 				uint8_t num = res;
+				work_set_target_ratio(work, vhash);
 				if (checkSecnonce) {
 					secNonce = cuda_check_hash_suppl(thr_id, throughput, pdata[19], d_hash[thr_id], num);
 				}
 				while (secNonce != 0 && res < 2) /* todo: up to 6 */
 				{
 					endiandata[19] = swab32_if(secNonce, swap);
-					skeincoinhash(vhash64, endiandata);
-					if (vhash64[7] <= ptarget[7] && fulltest(vhash64, ptarget)) {
+					skeincoinhash(vhash, endiandata);
+					if (vhash[7] <= ptarget[7] && fulltest(vhash, ptarget)) {
 						// todo: use 19 20 21... zr5 pok to adapt...
+						endiandata[19] = swab32_if(secNonce, swap);
+						skeincoinhash(vhash, endiandata);
+						if (bn_hash_target_ratio(vhash, ptarget) > work->shareratio)
+							work_set_target_ratio(work, vhash);
 						pdata[19+res*2] = swab32_if(secNonce, !swap);
 						res++;
 					}
@@ -441,7 +449,7 @@ extern "C" int scanhash_skeincoin(int thr_id, uint32_t *pdata, const uint32_t *p
 				return res;
 			}
 			else {
-				applog(LOG_WARNING, "GPU #%d: result for nonce %08x does not validate on CPU!", device_map[thr_id], foundNonce);
+				gpulog(LOG_WARNING, thr_id, "result for %08x does not validate on CPU!", foundNonce);
 			}
 		}
 
@@ -457,4 +465,24 @@ extern "C" int scanhash_skeincoin(int thr_id, uint32_t *pdata, const uint32_t *p
 	} while (!work_restart[thr_id].restart);
 
 	return 0;
+}
+
+// cleanup
+extern "C" void free_skeincoin(int thr_id)
+{
+	if (!init[thr_id])
+		return;
+
+	cudaThreadSynchronize();
+
+	if (sm5)
+		skeincoin_free(thr_id);
+	else {
+		cudaFree(d_hash[thr_id]);
+		cuda_check_cpu_free(thr_id);
+	}
+
+	init[thr_id] = false;
+
+	cudaDeviceSynchronize();
 }

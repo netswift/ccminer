@@ -395,6 +395,9 @@ unsigned char GetNfactor(unsigned int nTimestamp)
 		} else if (!strcmp(jane_params, "RAD") || !strcasecmp(jane_params, "RadioactiveCoin")) {
 			// InternetCoin:1389196388, minN: 4, maxN: 30
 			Ntimestamp = 1389196388; minN= 4; maxN= 30;
+		} else if (!strcmp(jane_params, "LEO") || !strcasecmp(jane_params, "LEOCoin")) {
+			// LEOCoin:1402845776, minN: 4, maxN: 30
+			Ntimestamp = 1402845776; minN= 4; maxN= 30;
 		} else {
 			if (sscanf(jane_params, "%u,%u,%u", &Ntimestamp, &minN, &maxN) != 3)
 			if (sscanf(jane_params, "%u", &Nfactor) == 1) return Nfactor; // skip bounding against minN, maxN
@@ -426,13 +429,32 @@ unsigned char GetNfactor(unsigned int nTimestamp)
 	return Nfactor;
 }
 
+static bool init[MAX_GPUS] = { 0 };
+
+// cleanup
+void free_scrypt_jane(int thr_id)
+{
+	int dev_id = device_map[thr_id];
+
+	if (!init[thr_id])
+		return;
+
+	cudaSetDevice(dev_id);
+	cudaDeviceSynchronize();
+	cudaDeviceReset(); // well, simple way to free ;)
+
+	init[thr_id] = false;
+}
+
 #define bswap_32x4(x) ((((x) << 24) & 0xff000000u) | (((x) << 8) & 0x00ff0000u) \
 					 | (((x) >> 8) & 0x0000ff00u) | (((x) >> 24) & 0x000000ffu))
 static int s_Nfactor = 0;
 
-int scanhash_scrypt_jane(int thr_id, uint32_t *pdata, const uint32_t *ptarget, unsigned char *scratchbuf,
-	uint32_t max_nonce, unsigned long *hashes_done, struct timeval *tv_start, struct timeval *tv_end)
+int scanhash_scrypt_jane(int thr_id, struct work *work, uint32_t max_nonce, unsigned long *hashes_done,
+	unsigned char *scratchbuf, struct timeval *tv_start, struct timeval *tv_end)
 {
+	uint32_t *pdata = work->data;
+	uint32_t *ptarget = work->target;
 	const uint32_t Htarg = ptarget[7];
 	uint32_t N;
 
@@ -459,7 +481,19 @@ int scanhash_scrypt_jane(int thr_id, uint32_t *pdata, const uint32_t *ptarget, u
 		s_Nfactor = Nfactor;
 	}
 
-	int throughput = cuda_throughput(thr_id);
+	static __thread int throughput = 0;
+	if(!init[thr_id]) {
+		int dev_id = device_map[thr_id];
+
+		cudaSetDevice(dev_id);
+		cudaDeviceSynchronize();
+		cudaDeviceReset();
+		cudaSetDevice(dev_id);
+		throughput = cuda_throughput(thr_id);
+		applog(LOG_INFO, "GPU #%d: cuda throughput is %d", dev_id, throughput);
+
+		init[thr_id] = true;
+	}
 
 	if(throughput == 0)
 		return -1;
@@ -594,6 +628,7 @@ int scanhash_scrypt_jane(int thr_id, uint32_t *pdata, const uint32_t *ptarget, u
 
 				if (memcmp(thash, &hash[cur][8*i], 32) == 0)
 				{
+					work_set_target_ratio(work, thash);
 					*hashes_done = n - pdata[19];
 					pdata[19] = tmp_nonce;
 					scrypt_free(&Vbuf);

@@ -4,10 +4,6 @@
 #include <unistd.h>
 #include <map>
 
-#ifndef _WIN32
-#include <unistd.h>
-#endif
-
 // include thrust
 #ifndef __cplusplus
 #include <thrust/version.h>
@@ -22,6 +18,11 @@
 #include "nvml.h"
 
 #include "cuda_runtime.h"
+
+#ifdef __cplusplus
+/* miner.h functions are declared in C type, not C++ */
+extern "C" {
+#endif
 
 // CUDA Devices on the System
 int cuda_num_devices()
@@ -62,7 +63,8 @@ void cuda_devicenames()
 		exit(1);
 	}
 
-	GPU_N = min(MAX_GPUS, GPU_N);
+	if (opt_n_threads)
+		GPU_N = min(MAX_GPUS, opt_n_threads);
 	for (int i=0; i < GPU_N; i++)
 	{
 		char vendorname[32] = { 0 };
@@ -93,7 +95,7 @@ void cuda_print_devices()
 	int ngpus = cuda_num_devices();
 	cuda_devicenames();
 	for (int n=0; n < ngpus; n++) {
-		int m = device_map[n];
+		int m = device_map[n % MAX_GPUS];
 		cudaDeviceProp props;
 		cudaGetDeviceProperties(&props, m);
 		if (!opt_n_threads || n < opt_n_threads) {
@@ -143,11 +145,74 @@ int cuda_finddevice(char *name)
 	return -1;
 }
 
-uint32_t device_intensity(int thr_id, const char *func, uint32_t defcount)
+// since 1.7
+uint32_t cuda_default_throughput(int thr_id, uint32_t defcount)
 {
+	//int dev_id = device_map[thr_id % MAX_GPUS];
 	uint32_t throughput = gpus_intensity[thr_id] ? gpus_intensity[thr_id] : defcount;
+	if (gpu_threads > 1 && throughput == defcount) throughput /= (gpu_threads-1);
 	api_set_throughput(thr_id, throughput);
+	//gpulog(LOG_INFO, thr_id, "throughput %u", throughput);
 	return throughput;
+}
+
+// if we use 2 threads on the same gpu, we need to reinit the threads
+void cuda_reset_device(int thr_id, bool *init)
+{
+	int dev_id = device_map[thr_id % MAX_GPUS];
+	cudaSetDevice(dev_id);
+	if (init != NULL) {
+		// with init array, its meant to be used in algo's scan code...
+		for (int i=0; i < MAX_GPUS; i++) {
+			if (device_map[i] == dev_id) {
+				init[i] = false;
+			}
+		}
+		// force exit from algo's scan loops/function
+		restart_threads();
+		cudaDeviceSynchronize();
+		while (cudaStreamQuery(NULL) == cudaErrorNotReady)
+			usleep(1000);
+	}
+	cudaDeviceReset();
+	if (opt_cudaschedule >= 0) {
+		cudaSetDevice(dev_id);
+		cudaSetDeviceFlags((unsigned)(opt_cudaschedule & cudaDeviceScheduleMask));
+	}
+}
+
+// return free memory in megabytes
+int cuda_available_memory(int thr_id)
+{
+	int dev_id = device_map[thr_id % MAX_GPUS];
+	size_t mtotal, mfree = 0;
+	cudaSetDevice(dev_id);
+	cudaMemGetInfo(&mfree, &mtotal);
+	return (int) (mfree / (1024 * 1024));
+}
+
+// Check (and reset) last cuda error, and report it in logs
+void cuda_log_lasterror(int thr_id, const char* func, int line)
+{
+	cudaError_t err = cudaGetLastError();
+	if (err != cudaSuccess && !opt_quiet)
+		gpulog(LOG_WARNING, thr_id, "%s:%d %s", func, line, cudaGetErrorString(err));
+}
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+
+int cuda_gpu_clocks(struct cgpu_info *gpu)
+{
+	cudaDeviceProp props;
+	if (cudaGetDeviceProperties(&props, gpu->gpu_id) == cudaSuccess) {
+		gpu->gpu_clock = props.clockRate;
+		gpu->gpu_memclock = props.memoryClockRate;
+		gpu->gpu_mem = props.totalGlobalMem;
+		return 0;
+	}
+	return -1;
 }
 
 // Zeitsynchronisations-Routine von cudaminer mit CPU sleep
@@ -181,43 +246,10 @@ cudaError_t MyStreamSynchronize(cudaStream_t stream, int situation, int thr_id)
 	return result;
 }
 
-int cuda_gpu_clocks(struct cgpu_info *gpu)
-{
-	cudaDeviceProp props;
-	if (cudaGetDeviceProperties(&props, gpu->gpu_id) == cudaSuccess) {
-		gpu->gpu_clock = props.clockRate;
-		gpu->gpu_memclock = props.memoryClockRate;
-		gpu->gpu_mem = props.totalGlobalMem;
-		return 0;
-	}
-	return -1;
-}
-
-// if we use 2 threads on the same gpu, we need to reinit the threads
-void cuda_reset_device(int thr_id, bool *init)
-{
-	int dev_id = device_map[thr_id];
-	cudaSetDevice(dev_id);
-	if (init != NULL) {
-		// with init array, its meant to be used in algo's scan code...
-		for (int i=0; i < MAX_GPUS; i++) {
-			if (device_map[i] == dev_id) {
-				init[i] = false;
-			}
-		}
-		// force exit from algo's scan loops/function
-		restart_threads();
-		cudaDeviceSynchronize();
-		while (cudaStreamQuery(NULL) == cudaErrorNotReady)
-			usleep(1000);
-	}
-	cudaDeviceReset();
-}
-
 void cudaReportHardwareFailure(int thr_id, cudaError_t err, const char* func)
 {
 	struct cgpu_info *gpu = &thr_info[thr_id].gpu;
 	gpu->hw_errors++;
-	applog(LOG_ERR, "GPU #%d: %s %s", device_map[thr_id], func, cudaGetErrorString(err));
+	gpulog(LOG_ERR, thr_id, "%s %s", func, cudaGetErrorString(err));
 	sleep(1);
 }

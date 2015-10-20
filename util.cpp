@@ -38,6 +38,7 @@
 
 extern pthread_mutex_t stratum_sock_lock;
 extern pthread_mutex_t stratum_work_lock;
+extern bool opt_debug_diff;
 
 bool opt_tracegpu = false;
 
@@ -143,6 +144,37 @@ void applog(int prio, const char *fmt, ...)
 		fflush(stdout);
 		pthread_mutex_unlock(&applog_lock);
 	}
+	va_end(ap);
+}
+
+extern int gpu_threads;
+// Use different prefix if multiple cpu threads per gpu
+// Also, auto hide LOG_DEBUG if --debug (-D) is not used
+void gpulog(int prio, int thr_id, const char *fmt, ...)
+{
+	char _ALIGN(128) pfmt[128];
+	char _ALIGN(128) line[256];
+	int len, dev_id = device_map[thr_id % MAX_GPUS];
+	va_list ap;
+
+	if (prio == LOG_DEBUG && !opt_debug)
+		return;
+
+	if (gpu_threads > 1)
+		len = snprintf(pfmt, 128, "GPU T%d: %s", thr_id, fmt);
+	else
+		len = snprintf(pfmt, 128, "GPU #%d: %s", dev_id, fmt);
+	pfmt[sizeof(pfmt)-1]='\0';
+
+	va_start(ap, fmt);
+
+	if (len && vsnprintf(line, sizeof(line), pfmt, ap)) {
+		line[sizeof(line)-1]='\0';
+		applog(prio, "%s", line);
+	} else {
+		fprintf(stderr, "%s OOM!\n", __func__);
+	}
+
 	va_end(ap);
 }
 
@@ -765,7 +797,7 @@ bool fulltest(const uint32_t *hash, const uint32_t *target)
 		}
 	}
 
-	if (!rc && opt_debug) {
+	if ((!rc && opt_debug) || opt_debug_diff) {
 		uint32_t hash_be[8], target_be[8];
 		char *hash_str, *target_str;
 		
@@ -789,11 +821,12 @@ bool fulltest(const uint32_t *hash, const uint32_t *target)
 	return rc;
 }
 
+// Only used by stratum pools
 void diff_to_target(uint32_t *target, double diff)
 {
 	uint64_t m;
 	int k;
-	
+
 	for (k = 6; k > 0 && diff > 1.0; k--)
 		diff /= 4294967296.0;
 	m = (uint64_t)(4294901760.0 / diff);
@@ -804,6 +837,34 @@ void diff_to_target(uint32_t *target, double diff)
 		target[k] = (uint32_t)m;
 		target[k + 1] = (uint32_t)(m >> 32);
 	}
+}
+
+// Only used by stratum pools
+void work_set_target(struct work* work, double diff)
+{
+	diff_to_target(work->target, diff);
+	work->targetdiff = diff;
+}
+
+
+// Only used by longpoll pools
+double target_to_diff(uint32_t* target)
+{
+	uchar* tgt = (uchar*) target;
+	uint64_t m =
+		(uint64_t)tgt[29] << 56 |
+		(uint64_t)tgt[28] << 48 |
+		(uint64_t)tgt[27] << 40 |
+		(uint64_t)tgt[26] << 32 |
+		(uint64_t)tgt[25] << 24 |
+		(uint64_t)tgt[24] << 16 |
+		(uint64_t)tgt[23] << 8  |
+		(uint64_t)tgt[22] << 0;
+
+	if (!m)
+		return 0.;
+	else
+		return (double)0x0000ffff00000000/m;
 }
 
 #ifdef WIN32
@@ -1467,13 +1528,6 @@ static bool stratum_set_difficulty(struct stratum_ctx *sctx, json_t *params)
 	sctx->next_diff = diff;
 	pthread_mutex_unlock(&stratum_work_lock);
 
-	/* store for api stats */
-	if (diff != stratum_diff) {
-		stratum_diff = diff;
-		applog(LOG_WARNING, "Stratum difficulty set to %g", diff);
-		g_work_time = 0;
-	}
-
 	return true;
 }
 
@@ -1799,33 +1853,20 @@ void do_gpu_tests(void)
 	unsigned long done;
 	char s[128] = { '\0' };
 	uchar buf[160];
-	uint32_t tgt[8] = { 0 };
+	struct work work;
+	memset(&work, 0, sizeof(work));
 
 	opt_tracegpu = true;
 	work_restart = (struct work_restart*) malloc(sizeof(struct work_restart));
 	work_restart[0].restart = 1;
-	tgt[7] = 0xffff;
-
-	//memset(buf, 0, sizeof buf);
-	//scanhash_skeincoin(0, (uint32_t*)buf, tgt, 1, &done);
-
-	//memset(buf, 0, sizeof buf);
-	//memcpy(buf, zrtest, 80);
-	//scanhash_zr5(0, (uint32_t*)buf, tgt, zrtest[19]+1, &done);
+	work.target[7] = 0xffff;
 
 	//struct timeval tv;
-	//memset(buf, 0, sizeof buf);
-	//scanhash_scrypt_jane(0, (uint32_t*)buf, tgt, NULL, 1, &done, &tv, &tv);
+	//memset(work.data, 0, sizeof(work.data));
+	//scanhash_scrypt_jane(0, &work, NULL, 1, &done, &tv, &tv);
 
-	memset(buf, 0, sizeof buf);
-	scanhash_lyra2(0, (uint32_t*)buf, tgt, 1, &done);
-
-	//memset(buf, 0, sizeof buf);
-	// buf[0] = 1; buf[64] = 2; // for endian tests
-	//scanhash_blake256(0, (uint32_t*)buf, tgt, 1, &done, 14);
-
-	//memset(buf, 0, sizeof buf);
-	//scanhash_heavy(0, (uint32_t*)buf, tgt, 1, &done, 1, 84); // HEAVYCOIN_BLKHDR_SZ=84
+	memset(work.data, 0, sizeof(work.data));
+	scanhash_lyra2(0, &work, 1, &done);
 
 	free(work_restart);
 	work_restart = NULL;
@@ -1922,6 +1963,9 @@ void print_hash_tests(void)
 
 	s3hash(&hash[0], &buf[0]);
 	printpfx("S3", hash);
+
+	wcoinhash(&hash[0], &buf[0]);
+	printpfx("whirlpool", hash);
 
 	whirlxHash(&hash[0], &buf[0]);
 	printpfx("whirlpoolx", hash);

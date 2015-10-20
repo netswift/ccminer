@@ -21,14 +21,11 @@ extern void x11_shavite512_cpu_hash_64(int thr_id, uint32_t threads, uint32_t st
 
 extern int  x11_simd512_cpu_init(int thr_id, uint32_t threads);
 extern void x11_simd512_cpu_hash_64(int thr_id, uint32_t threads, uint32_t startNounce, uint32_t *d_nonceVector, uint32_t *d_hash, int order);
+extern void x11_simd512_cpu_free(int thr_id);
 
 extern void x11_echo512_cpu_init(int thr_id, uint32_t threads);
 extern void x11_echo512_cpu_hash_64(int thr_id, uint32_t threads, uint32_t startNounce, uint32_t *d_nonceVector, uint32_t *d_hash, int order);
 
-extern void quark_compactTest_cpu_init(int thr_id, uint32_t threads);
-extern void quark_compactTest_cpu_hash_64(int thr_id, uint32_t threads, uint32_t startNounce, uint32_t *inpHashes,
-											uint32_t *d_noncesTrue, size_t *nrmTrue, uint32_t *d_noncesFalse, size_t *nrmFalse,
-											int order);
 
 // CPU Hash
 extern "C" void fresh_hash(void *state, const void *input)
@@ -70,15 +67,15 @@ extern "C" void fresh_hash(void *state, const void *input)
 
 static bool init[MAX_GPUS] = { 0 };
 
-extern "C" int scanhash_fresh(int thr_id, uint32_t *pdata,
-	const uint32_t *ptarget, uint32_t max_nonce,
-	unsigned long *hashes_done)
+extern "C" int scanhash_fresh(int thr_id, struct work* work, uint32_t max_nonce, unsigned long *hashes_done)
 {
+	uint32_t *pdata = work->data;
+	uint32_t *ptarget = work->target;
 	const uint32_t first_nonce = pdata[19];
 	uint32_t endiandata[20];
 
-	uint32_t throughput =  device_intensity(thr_id, __func__, 1 << 19);
-	throughput = min(throughput,  (max_nonce - first_nonce));
+	uint32_t throughput =  cuda_default_throughput(thr_id, 1 << 19);
+	if (init[thr_id]) throughput = min(throughput, max_nonce - first_nonce);
 
 	if (opt_benchmark)
 		((uint32_t*)ptarget)[7] = 0x00ff;
@@ -122,6 +119,7 @@ extern "C" int scanhash_fresh(int thr_id, uint32_t *pdata,
 		CUDA_SAFE_CALL(cudaThreadSynchronize());
 		print_hash((unsigned char*)buf); printf("\n");
 #endif
+		*hashes_done = pdata[19] - first_nonce + throughput;
 
 		foundNonce = cuda_check_hash(thr_id, throughput, pdata[19], d_hash[thr_id]);
 		if (foundNonce != UINT32_MAX)
@@ -133,15 +131,19 @@ extern "C" int scanhash_fresh(int thr_id, uint32_t *pdata,
 			if (vhash64[7] <= Htarg && fulltest(vhash64, ptarget)) {
 				int res = 1;
 				uint32_t secNonce = cuda_check_hash_suppl(thr_id, throughput, pdata[19], d_hash[thr_id], 1);
-				*hashes_done = pdata[19] - first_nonce + throughput;
+				work_set_target_ratio(work, vhash64);
 				if (secNonce != 0) {
+					be32enc(&endiandata[19], secNonce);
+					fresh_hash(vhash64, endiandata);
+					if (bn_hash_target_ratio(vhash64, ptarget) > work->shareratio)
+						work_set_target_ratio(work, vhash64);
 					pdata[21] = secNonce;
 					res++;
 				}
 				pdata[19] = foundNonce;
 				return res;
 			} else {
-				applog(LOG_WARNING, "GPU #%d: result for %08x does not validate on CPU!", device_map[thr_id], foundNonce);
+				gpulog(LOG_WARNING, thr_id, "result for %08x does not validate on CPU!", foundNonce);
 			}
 		}
 
@@ -151,4 +153,21 @@ extern "C" int scanhash_fresh(int thr_id, uint32_t *pdata,
 
 	*hashes_done = pdata[19] - first_nonce + 1;
 	return 0;
+}
+
+// cleanup
+extern "C" void free_fresh(int thr_id)
+{
+	if (!init[thr_id])
+		return;
+
+	cudaSetDevice(device_map[thr_id]);
+
+	cudaFree(d_hash[thr_id]);
+	x11_simd512_cpu_free(thr_id);
+
+	cuda_check_cpu_free(thr_id);
+	init[thr_id] = false;
+
+	cudaDeviceSynchronize();
 }

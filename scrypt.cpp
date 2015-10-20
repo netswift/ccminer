@@ -685,17 +685,49 @@ static int lastFactor = 0;
 
 static void computeGold(uint32_t* const input, uint32_t *reference, uchar *scratchpad);
 
+static bool init[MAX_GPUS] = { 0 };
+
+// cleanup
+void free_scrypt(int thr_id)
+{
+	int dev_id = device_map[thr_id];
+
+	if (!init[thr_id])
+		return;
+
+	// trivial way to free all...
+	cudaSetDevice(dev_id);
+	cudaDeviceSynchronize();
+	cudaDeviceReset();
+
+	init[thr_id] = false;
+}
+
 // Scrypt proof of work algorithm
 // using SSE2 vectorized HMAC SHA256 on CPU and
 // a salsa core implementation on GPU with CUDA
 //
-int scanhash_scrypt(int thr_id, uint32_t *pdata, const uint32_t *ptarget, unsigned char *scratchbuf,
-	uint32_t max_nonce, unsigned long *hashes_done, struct timeval *tv_start, struct timeval *tv_end)
+int scanhash_scrypt(int thr_id, struct work *work, uint32_t max_nonce, unsigned long *hashes_done,
+	unsigned char *scratchbuf, struct timeval *tv_start, struct timeval *tv_end)
 {
 	int result = 0;
-	int throughput = cuda_throughput(thr_id);
+	uint32_t *pdata = work->data;
+	uint32_t *ptarget = work->target;
+	static __thread int throughput = 0;
 
-	if(throughput == 0)
+	if (!init[thr_id]) {
+		int dev_id = device_map[thr_id];
+		cudaSetDevice(dev_id);
+		cudaDeviceSynchronize();
+		cudaDeviceReset();
+		cudaSetDevice(dev_id);
+		throughput = cuda_throughput(thr_id);
+		applog(LOG_INFO, "GPU #%d: cuda throughput is %d", dev_id, throughput);
+
+		init[thr_id] = true;
+	}
+
+	if (throughput == 0)
 		return -1;
 
 	gettimeofday(tv_start, NULL);
@@ -904,6 +936,7 @@ int scanhash_scrypt(int thr_id, uint32_t *pdata, const uint32_t *ptarget, unsign
 							device_map[thr_id], device_name[thr_id], i, cur);
 					} else {
 						*hashes_done = n - pdata[19];
+						work_set_target_ratio(work, refhash);
 						pdata[19] = nonce[cur] + i;
 						result = 1;
 						goto byebye;

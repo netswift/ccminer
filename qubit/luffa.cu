@@ -30,13 +30,14 @@ extern "C" void luffa_hash(void *state, const void *input)
 
 static bool init[MAX_GPUS] = { 0 };
 
-extern "C" int scanhash_luffa(int thr_id, uint32_t *pdata, const uint32_t *ptarget,
-	uint32_t max_nonce, unsigned long *hashes_done)
+extern "C" int scanhash_luffa(int thr_id, struct work* work, uint32_t max_nonce, unsigned long *hashes_done)
 {
 	uint32_t _ALIGN(64) endiandata[20];
+	uint32_t *pdata = work->data;
+	uint32_t *ptarget = work->target;
 	const uint32_t first_nonce = pdata[19];
-	uint32_t throughput = device_intensity(thr_id, __func__, 1U << 22); // 256*256*8*8
-	throughput = min(throughput, max_nonce - first_nonce);
+	uint32_t throughput = cuda_default_throughput(thr_id, 1U << 22); // 256*256*8*8
+	if (init[thr_id]) throughput = min(throughput, max_nonce - first_nonce);
 
 	if (opt_benchmark)
 		((uint32_t*)ptarget)[7] = 0x0000f;
@@ -44,8 +45,12 @@ extern "C" int scanhash_luffa(int thr_id, uint32_t *pdata, const uint32_t *ptarg
 	if (!init[thr_id])
 	{
 		cudaSetDevice(device_map[thr_id]);
+		CUDA_LOG_ERROR();
+		//if (opt_cudaschedule == -1) // to reduce cpu usage...
+		//	cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync);
+		//CUDA_LOG_ERROR();
 
-		CUDA_SAFE_CALL(cudaMalloc(&d_hash[thr_id], throughput * 64));
+		CUDA_SAFE_CALL(cudaMalloc(&d_hash[thr_id], (size_t) 64 * throughput));
 
 		qubit_luffa512_cpu_init(thr_id, throughput);
 		cuda_check_cpu_init(thr_id, throughput);
@@ -73,11 +78,11 @@ extern "C" int scanhash_luffa(int thr_id, uint32_t *pdata, const uint32_t *ptarg
 			luffa_hash(vhash64, endiandata);
 
 			if (vhash64[7] <= ptarget[7] && fulltest(vhash64, ptarget)) {
-				//*hashes_done = min(max_nonce - first_nonce, (uint64_t) pdata[19] - first_nonce + throughput);
+				work_set_target_ratio(work, vhash64);
 				pdata[19] = foundNonce;
 				return 1;
 			} else {
-				applog(LOG_WARNING, "GPU #%d: result for nonce %08x does not validate on CPU!", device_map[thr_id], foundNonce);
+				gpulog(LOG_WARNING, thr_id, "result for %08x does not validate on CPU!", foundNonce);
 			}
 		}
 
@@ -92,4 +97,20 @@ extern "C" int scanhash_luffa(int thr_id, uint32_t *pdata, const uint32_t *ptarg
 
 	*hashes_done = pdata[19] - first_nonce + 1;
 	return 0;
+}
+
+// cleanup
+extern "C" void free_luffa(int thr_id)
+{
+	if (!init[thr_id])
+		return;
+
+	cudaThreadSynchronize();
+
+	cudaFree(d_hash[thr_id]);
+
+	cuda_check_cpu_free(thr_id);
+
+	init[thr_id] = false;
+	cudaDeviceSynchronize();
 }

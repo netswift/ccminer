@@ -9,9 +9,10 @@ extern "C" {
 #include "miner.h"
 #include "cuda_helper.h"
 
-static uint32_t *d_hash[MAX_GPUS];
+static uint32_t *d_hash[MAX_GPUS] = { 0 };
 
 extern void whirlpoolx_cpu_init(int thr_id, uint32_t threads);
+extern void whirlpoolx_cpu_free(int thr_id);
 extern void whirlpoolx_setBlock_80(void *pdata, const void *ptarget);
 extern uint32_t whirlpoolx_cpu_hash(int thr_id, uint32_t threads, uint32_t startNounce);
 extern void whirlpoolx_precompute(int thr_id);
@@ -37,14 +38,15 @@ extern "C" void whirlxHash(void *state, const void *input)
 
 static bool init[MAX_GPUS] = { 0 };
 
-extern "C" int scanhash_whirlpoolx(int thr_id, uint32_t *pdata, const uint32_t *ptarget,
-	uint32_t max_nonce, unsigned long *hashes_done)
+extern "C" int scanhash_whirlx(int thr_id,  struct work* work, uint32_t max_nonce, unsigned long *hashes_done)
 {
+	uint32_t *pdata = work->data;
+	uint32_t *ptarget = work->target;
 	const uint32_t first_nonce = pdata[19];
 	uint32_t endiandata[20];
 	int intensity = is_windows() ? 20 : 22;
-	uint32_t throughput = device_intensity(thr_id, __func__, 1U << intensity);
-	throughput = min(throughput, max_nonce - first_nonce);
+	uint32_t throughput = cuda_default_throughput(thr_id, 1U << intensity);
+	if (init[thr_id]) throughput = min(throughput, max_nonce - first_nonce);
 
 	if (opt_benchmark)
 		((uint32_t*)ptarget)[7] = 0x0000ff;
@@ -52,7 +54,7 @@ extern "C" int scanhash_whirlpoolx(int thr_id, uint32_t *pdata, const uint32_t *
 	if (!init[thr_id]) {
 		cudaSetDevice(device_map[thr_id]);
 
-		CUDA_CALL_OR_RET_X(cudaMalloc(&d_hash[thr_id], 64 * throughput), 0);
+		CUDA_CALL_OR_RET_X(cudaMalloc(&d_hash[thr_id], (size_t) 64 * throughput), 0);
 
 		whirlpoolx_cpu_init(thr_id, throughput);
 
@@ -65,6 +67,7 @@ extern "C" int scanhash_whirlpoolx(int thr_id, uint32_t *pdata, const uint32_t *
 
 	whirlpoolx_setBlock_80((void*)endiandata, ptarget);
 	whirlpoolx_precompute(thr_id);
+
 	do {
 		uint32_t foundNonce = whirlpoolx_cpu_hash(thr_id, throughput, pdata[19]);
 		if (foundNonce != UINT32_MAX)
@@ -74,12 +77,14 @@ extern "C" int scanhash_whirlpoolx(int thr_id, uint32_t *pdata, const uint32_t *
 			be32enc(&endiandata[19], foundNonce);
 			whirlxHash(vhash64, endiandata);
 
+			*hashes_done = pdata[19] - first_nonce + throughput;
+
 			if (vhash64[7] <= Htarg && fulltest(vhash64, ptarget)) {
-				*hashes_done = pdata[19] - first_nonce + throughput;
+				work_set_target_ratio(work, vhash64);
 				pdata[19] = foundNonce;
 				return 1;
 			} else {
-				applog(LOG_WARNING, "GPU #%d: result for %08x does not validate on CPU!", device_map[thr_id], foundNonce);
+				gpulog(LOG_WARNING, thr_id, "result for %08x does not validate on CPU!", foundNonce);
 			}
 		}
 
@@ -94,4 +99,20 @@ extern "C" int scanhash_whirlpoolx(int thr_id, uint32_t *pdata, const uint32_t *
 	*(hashes_done) = pdata[19] - first_nonce + 1;
 
 	return 0;
+}
+
+// cleanup
+extern "C" void free_whirlx(int thr_id)
+{
+	if (!init[thr_id])
+		return;
+
+	cudaThreadSynchronize();
+
+	cudaFree(d_hash[thr_id]);
+
+	whirlpoolx_cpu_free(thr_id);
+	init[thr_id] = false;
+
+	cudaDeviceSynchronize();
 }
