@@ -203,6 +203,9 @@ static char *getpoolnfo(char *params)
 	char nonce[128] = { 0 };
 	int pooln = params ? atoi(params) % num_pools : cur_pooln;
 	struct pool_infos *p = &pools[pooln];
+	uint32_t last_share = 0;
+	if (p->last_share_time)
+		last_share = (uint32_t) (time(NULL) - p->last_share_time);
 
 	*s = '\0';
 
@@ -215,12 +218,12 @@ static char *getpoolnfo(char *params)
 	}
 
 	snprintf(s, MYBUFSIZ, "URL=%s;USER=%s;SOLV=%d;ACC=%d;REJ=%d;H=%u;JOB=%s;DIFF=%.6f;"
-		"N2SZ=%d;N2=%s;PING=%u;DISCO=%u;WAIT=%u;UPTIME=%u|",
+		"BEST=%.6f;N2SZ=%d;N2=%s;PING=%u;DISCO=%u;WAIT=%u;UPTIME=%u;LAST=%u|",
 		p->url, p->type & POOL_STRATUM ? p->user : "",
 		p->solved_count, p->accepted_count, p->rejected_count,
-		stratum.job.height, jobid, stratum_diff,
+		stratum.job.height, jobid, stratum_diff, p->best_share,
 		(int) stratum.xnonce2_size, nonce, stratum.answer_msec,
-		p->disconnects, p->wait_time, p->work_time);
+		p->disconnects, p->wait_time, p->work_time, last_share);
 
 	return s;
 }
@@ -406,13 +409,13 @@ static char *remote_switchpool(char *params)
 		return buffer;
 	if (!params || strlen(params) == 0) {
 		// rotate pool test
-		ret = pool_switch_next();
+		ret = pool_switch_next(-1);
 	} else {
 		int n = atoi(params);
 		if (n == cur_pooln)
 			ret = true;
 		else if (n < num_pools)
-			ret = pool_switch(n);
+			ret = pool_switch(-1, n);
 	}
 	sprintf(buffer, "%s|", ret ? "ok" : "fail");
 	return buffer;
@@ -430,7 +433,7 @@ static char *remote_seturl(char *params)
 		return buffer;
 	if (!params || strlen(params) == 0) {
 		// rotate pool test
-		ret = pool_switch_next();
+		ret = pool_switch_next(-1);
 	} else {
 		ret = pool_switch_url(params);
 	}

@@ -633,9 +633,9 @@ __device__ __inline__ uint2 ROR24(const uint2 a)
 	return result;
 }
 #else
-#define ROL8(u)  ((u) << 8)
-#define ROR16(u) ((u) >> 16)
-#define ROR24(u) ((u) >> 24)
+#define ROL8(u)  ROL2(u, 8)
+#define ROR16(u) ROR2(u,16)
+#define ROR24(u) ROR2(u,24)
 #endif
 
 /* uint2 for bmw512 - to double check later */

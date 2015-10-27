@@ -307,13 +307,16 @@
     <ClInclude Include="cpuminer-config.h" />
     <ClInclude Include="cuda_groestlcoin.h" />
     <ClInclude Include="cuda_helper.h" />
-    <ClInclude Include="cuda_vector.h" />
+    <ClInclude Include="cuda_vector_uint2x4.h" />
     <ClInclude Include="elist.h" />
     <ClInclude Include="heavy\heavy.h" />
     <ClInclude Include="hefty1.h" />
     <ClInclude Include="algos.h" />
     <ClInclude Include="miner.h" />
     <ClInclude Include="nvml.h" />
+    <ClInclude Include="quark\cuda_bmw512_sm3.cuh" />
+    <ClInclude Include="quark\cuda_quark_blake512_sp.cuh" />
+    <ClInclude Include="quark\cuda_skein512_sp.cuh" />
     <ClInclude Include="res\resource.h" />
     <ClInclude Include="scrypt\salsa_kernel.h" />
     <ClInclude Include="sph\sph_blake.h" />
