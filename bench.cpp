@@ -77,9 +77,6 @@ void algo_free_all(int thr_id)
 	//free_sha256d(thr_id);
 	free_scrypt(thr_id);
 	free_scrypt_jane(thr_id);
-
-	// warn on cuda error
-	CUDA_LOG_ERROR();
 }
 
 // benchmark all algos (called once per mining thread)
@@ -89,6 +86,9 @@ bool bench_algo_switch_next(int thr_id)
 	int prev_algo = algo;
 	int dev_id = device_map[thr_id % MAX_GPUS];
 	int mfree, mused;
+	// doesnt seems enough to prevent device slow down
+	// after some algo switchs
+	bool need_reset = (gpu_threads == 1);
 
 	algo++;
 
@@ -100,16 +100,10 @@ bool bench_algo_switch_next(int thr_id)
 
 	if (device_sm[dev_id] && device_sm[dev_id] < 300) {
 		// incompatible SM 2.1 kernels...
-		if (algo == ALGO_FRESH) algo++;
 		if (algo == ALGO_GROESTL) algo++;
 		if (algo == ALGO_MYR_GR) algo++;
-		if (algo == ALGO_JACKPOT) algo++;
-		if (algo == ALGO_LYRA2v2) algo++;
+		if (algo == ALGO_JACKPOT) algo++; // compact shuffle
 		if (algo == ALGO_NEOSCRYPT) algo++;
-		if (algo == ALGO_QUARK) algo++;
-		if (algo == ALGO_QUBIT) algo++;
-		if (algo == ALGO_S3) algo++; // to check...
-		while (algo >= ALGO_X11 && algo <= ALGO_X17) algo++;
 		if (algo == ALGO_WHIRLPOOLX) algo++;
 	}
 	// and unwanted ones...
@@ -119,6 +113,7 @@ bool bench_algo_switch_next(int thr_id)
 	// free current algo memory and track mem usage
 	mused = cuda_available_memory(thr_id);
 	algo_free_all(thr_id);
+	CUDA_LOG_ERROR();
 
 	// device can take some time to free
 	mfree = cuda_available_memory(thr_id);
@@ -147,6 +142,7 @@ bool bench_algo_switch_next(int thr_id)
 		gpulog(LOG_WARNING, thr_id, "possible %d MB memory leak in %s! %d MB free",
 			(device_mem_free[thr_id] - mfree), algo_names[prev_algo], mfree);
 		cuda_reset_device(thr_id, NULL); // force to free the leak
+		need_reset = false;
 		mfree = cuda_available_memory(thr_id);
 	}
 	// store used memory per algo
@@ -156,14 +152,13 @@ bool bench_algo_switch_next(int thr_id)
 	// store to dump a table per gpu later
 	algo_hashrates[thr_id][prev_algo] = hashrate;
 
-
 	// wait the other threads to display logs correctly
 	if (opt_n_threads > 1) {
 		pthread_barrier_wait(&algo_barr);
 	}
 
 	if (algo == ALGO_AUTO)
-		return false;
+		return false; // all algos done
 
 	// mutex primary used for the stats purge
 	pthread_mutex_lock(&bench_lock);
@@ -173,6 +168,9 @@ bool bench_algo_switch_next(int thr_id)
 	global_hashrate = 0;
 	thr_hashrates[thr_id] = 0; // reset for minmax64
 	pthread_mutex_unlock(&bench_lock);
+
+	if (need_reset)
+		cuda_reset_device(thr_id, NULL);
 
 	if (thr_id == 0)
 		applog(LOG_BLUE, "Benchmark algo %s...", algo_names[algo]);

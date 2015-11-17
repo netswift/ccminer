@@ -73,6 +73,21 @@ void lyra2v2_hash(void *state, const void *input)
 	memcpy(state, hashA, 32);
 }
 
+#ifdef _DEBUG
+#define TRACE(algo) { \
+	if (max_nonce == 1 && pdata[19] <= 1) { \
+		uint32_t* debugbuf = NULL; \
+		cudaMallocHost(&debugbuf, 32); \
+		cudaMemcpy(debugbuf, d_hash[thr_id], 32, cudaMemcpyDeviceToHost); \
+		printf("lyra2 %s %08x %08x %08x %08x...%08x... \n", algo, swab32(debugbuf[0]), swab32(debugbuf[1]), \
+			swab32(debugbuf[2]), swab32(debugbuf[3]), swab32(debugbuf[7])); \
+		cudaFreeHost(debugbuf); \
+	} \
+}
+#else
+#define TRACE(algo) {}
+#endif
+
 static bool init[MAX_GPUS] = { 0 };
 
 extern "C" int scanhash_lyra2v2(int thr_id, struct work* work, uint32_t max_nonce, unsigned long *hashes_done)
@@ -90,30 +105,30 @@ extern "C" int scanhash_lyra2v2(int thr_id, struct work* work, uint32_t max_nonc
 
 	if (!init[thr_id])
 	{
+		size_t matrix_sz = 16 * sizeof(uint64_t) * 4 * 3;
 		cudaSetDevice(dev_id);
-		//cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync);
-		//if (gpu_threads == 1)
-		//	cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
-		CUDA_LOG_ERROR();
+		if (opt_cudaschedule == -1 && gpu_threads == 1) {
+			cudaDeviceReset();
+			// reduce cpu usage
+			cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync);
+			CUDA_LOG_ERROR();
+		}
 
 		blake256_cpu_init(thr_id, throughput);
 		keccak256_cpu_init(thr_id,throughput);
 		skein256_cpu_init(thr_id, throughput);
 		bmw256_cpu_init(thr_id, throughput);
-		CUDA_LOG_ERROR();
 
-		// DMatrix (780Ti may prefer 16 instead of 12, cf djm34)
-		CUDA_SAFE_CALL(cudaMalloc(&d_matrix[thr_id], (size_t)12 * sizeof(uint64_t) * 4 * 4 * throughput));
+		// SM 3 implentation requires a bit more memory
+		if (device_sm[dev_id] < 500 || cuda_arch[dev_id] < 500)
+			matrix_sz = 16 * sizeof(uint64_t) * 4 * 4;
+			
+		CUDA_SAFE_CALL(cudaMalloc(&d_matrix[thr_id], matrix_sz * throughput));
 		lyra2v2_cpu_init(thr_id, throughput, d_matrix[thr_id]);
 
 		CUDA_SAFE_CALL(cudaMalloc(&d_hash[thr_id], (size_t)32 * throughput));
 
-		if (device_sm[dev_id] < 300) {
-			applog(LOG_ERR, "Device SM 3.0 or more recent required!");
-			proper_exit(1);
-			return -1;
-		}
-
+		api_set_throughput(thr_id, throughput);
 		init[thr_id] = true;
 	}
 
@@ -129,11 +144,17 @@ extern "C" int scanhash_lyra2v2(int thr_id, struct work* work, uint32_t max_nonc
 		uint32_t foundNonces[2] = { 0, 0 };
 
 		blake256_cpu_hash_80(thr_id, throughput, pdata[19], d_hash[thr_id], order++);
+		TRACE("blake  :");
 		keccak256_cpu_hash_32(thr_id, throughput, pdata[19], d_hash[thr_id], order++);
+		TRACE("keccak :");
 		cubehash256_cpu_hash_32(thr_id, throughput, pdata[19], d_hash[thr_id], order++);
+		TRACE("cube   :");
 		lyra2v2_cpu_hash_32(thr_id, throughput, pdata[19], d_hash[thr_id], order++);
+		TRACE("lyra2  :");
 		skein256_cpu_hash_32(thr_id, throughput, pdata[19], d_hash[thr_id], order++);
+		TRACE("skein  :");
 		cubehash256_cpu_hash_32(thr_id, throughput,pdata[19], d_hash[thr_id], order++);
+		TRACE("cube   :");
 
 		bmw256_cpu_hash_32(thr_id, throughput, pdata[19], d_hash[thr_id], foundNonces);
 
@@ -169,11 +190,15 @@ extern "C" int scanhash_lyra2v2(int thr_id, struct work* work, uint32_t max_nonc
 			}
 		}
 
+		if ((uint64_t)throughput + pdata[19] >= max_nonce) {
+			pdata[19] = max_nonce;
+			break;
+		}
 		pdata[19] += throughput;
 
-	} while (!work_restart[thr_id].restart && (max_nonce > ((uint64_t)(pdata[19]) + throughput)));
+	} while (!work_restart[thr_id].restart && !abort_flag);
 
-	*hashes_done = pdata[19] - first_nonce + 1;
+	*hashes_done = pdata[19] - first_nonce;
 	return 0;
 }
 

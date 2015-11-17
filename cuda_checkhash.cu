@@ -11,23 +11,27 @@
 __constant__ uint32_t pTarget[8]; // 32 bytes
 
 // store MAX_GPUS device arrays of 8 nonces
-static uint32_t* h_resNonces[MAX_GPUS];
-static uint32_t* d_resNonces[MAX_GPUS];
-static bool init_done = false;
+static uint32_t* h_resNonces[MAX_GPUS] = { NULL };
+static uint32_t* d_resNonces[MAX_GPUS] = { NULL };
+static __thread bool init_done = false;
 
 __host__
 void cuda_check_cpu_init(int thr_id, uint32_t threads)
 {
-    CUDA_CALL_OR_RET(cudaMallocHost(&h_resNonces[thr_id], 32));
     CUDA_CALL_OR_RET(cudaMalloc(&d_resNonces[thr_id], 32));
+    CUDA_SAFE_CALL(cudaMallocHost(&h_resNonces[thr_id], 32));
     init_done = true;
 }
 
 __host__
 void cuda_check_cpu_free(int thr_id)
 {
+	if (!init_done) return;
 	cudaFree(d_resNonces[thr_id]);
 	cudaFreeHost(h_resNonces[thr_id]);
+	d_resNonces[thr_id] = NULL;
+	h_resNonces[thr_id] = NULL;
+	init_done = false;
 }
 
 // Target Difficulty
@@ -121,6 +125,9 @@ uint32_t cuda_check_hash(int thr_id, uint32_t threads, uint32_t startNounce, uin
 	dim3 grid((threads + threadsperblock - 1) / threadsperblock);
 	dim3 block(threadsperblock);
 
+	if (bench_algo >= 0) // dont interrupt the global benchmark
+		return UINT32_MAX;
+
 	if (!init_done) {
 		applog(LOG_ERR, "missing call to cuda_check_cpu_init");
 		return UINT32_MAX;
@@ -142,6 +149,9 @@ uint32_t cuda_check_hash_32(int thr_id, uint32_t threads, uint32_t startNounce, 
 
 	dim3 grid((threads + threadsperblock - 1) / threadsperblock);
 	dim3 block(threadsperblock);
+
+	if (bench_algo >= 0) // dont interrupt the global benchmark
+		return UINT32_MAX;
 
 	if (!init_done) {
 		applog(LOG_ERR, "missing call to cuda_check_cpu_init");
@@ -192,7 +202,7 @@ uint32_t cuda_check_hash_suppl(int thr_id, uint32_t threads, uint32_t startNounc
 	cuda_checkhash_64_suppl <<<grid, block>>> (startNounce, d_inputHash, d_resNonces[thr_id]);
 	cudaThreadSynchronize();
 
-	cudaMemcpy(h_resNonces[thr_id], d_resNonces[thr_id], 8*sizeof(uint32_t), cudaMemcpyDeviceToHost);
+	cudaMemcpy(h_resNonces[thr_id], d_resNonces[thr_id], 32, cudaMemcpyDeviceToHost);
 	rescnt = h_resNonces[thr_id][0];
 	if (rescnt > numNonce) {
 		if (numNonce <= rescnt) {
@@ -237,9 +247,12 @@ uint32_t cuda_check_hash_branch(int thr_id, uint32_t threads, uint32_t startNoun
 
 	uint32_t result = UINT32_MAX;
 
+	if (bench_algo >= 0) // dont interrupt the global benchmark
+		return result;
+
 	if (!init_done) {
 		applog(LOG_ERR, "missing call to cuda_check_cpu_init");
-		return UINT32_MAX;
+		return result;
 	}
 
 	cudaMemset(d_resNonces[thr_id], 0xff, sizeof(uint32_t));

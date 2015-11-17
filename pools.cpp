@@ -29,6 +29,7 @@ extern char* short_url;
 extern struct work _ALIGN(64) g_work;
 extern struct stratum_ctx stratum;
 extern pthread_mutex_t stratum_work_lock;
+extern pthread_mutex_t stats_lock;
 extern bool get_work(struct thr_info *thr, struct work *work);
 extern bool stratum_need_reset;
 extern time_t firstwork_time;
@@ -37,6 +38,8 @@ extern volatile time_t g_work_time;
 extern volatile int pool_switch_count;
 extern volatile bool pool_is_switching;
 extern uint8_t conditional_state[MAX_GPUS];
+
+extern double thr_hashrates[MAX_GPUS];
 
 extern struct option options[];
 
@@ -51,13 +54,12 @@ struct opt_config_array {
 	{ CFG_POOL, "user", NULL },
 	{ CFG_POOL, "pass", NULL },
 	{ CFG_POOL, "userpass", NULL },
-	{ CFG_POOL, "algo", NULL },
 	{ CFG_POOL, "name", "pool-name" },
+	{ CFG_POOL, "algo", "pool-algo" },
 	{ CFG_POOL, "scantime", "pool-scantime" },
 	{ CFG_POOL, "max-diff", "pool-max-diff" },
 	{ CFG_POOL, "max-rate", "pool-max-rate" },
-	{ CFG_POOL, "removed",  "pool-removed" },
-	{ CFG_POOL, "disabled", "pool-removed" }, // sample alias
+	{ CFG_POOL, "disabled", "pool-disabled" },
 	{ CFG_POOL, "time-limit", "pool-time-limit" },
 	{ CFG_NULL, NULL, NULL }
 };
@@ -117,12 +119,12 @@ void pool_init_defaults()
 void pool_set_attr(int pooln, const char* key, char* arg)
 {
 	struct pool_infos *p = &pools[pooln];
-	if (!strcasecmp(key, "algo")) {
-		p->algo = algo_to_int(arg);
-		return;
-	}
 	if (!strcasecmp(key, "name")) {
 		snprintf(p->name, sizeof(p->name), "%s", arg);
+		return;
+	}
+	if (!strcasecmp(key, "algo")) {
+		p->algo = algo_to_int(arg);
 		return;
 	}
 	if (!strcasecmp(key, "scantime")) {
@@ -141,7 +143,7 @@ void pool_set_attr(int pooln, const char* key, char* arg)
 		p->time_limit = atoi(arg);
 		return;
 	}
-	if (!strcasecmp(key, "removed")) {
+	if (!strcasecmp(key, "disabled")) {
 		int removed = atoi(arg);
 		if (removed) {
 			p->status |= POOL_ST_REMOVED;
@@ -154,6 +156,7 @@ void pool_set_attr(int pooln, const char* key, char* arg)
 bool pool_switch(int thr_id, int pooln)
 {
 	int prevn = cur_pooln;
+	bool algo_switch = false;
 	struct pool_infos *prev = &pools[cur_pooln];
 	struct pool_infos* p = NULL;
 
@@ -195,9 +198,30 @@ bool pool_switch(int thr_id, int pooln)
 
 	pthread_mutex_unlock(&stratum_work_lock);
 
+	// algo "blind" switch without free, not proper
+	// todo: barrier required to free algo resources
+	if (p->algo != (int) opt_algo) {
+
+		if (opt_algo != ALGO_AUTO) {
+
+			algo_switch = true;
+
+			pthread_mutex_lock(&stats_lock);
+			for (int n=0; n<opt_n_threads; n++)
+				thr_hashrates[n] = 0.;
+			stats_purge_all();
+			if (check_dups)
+				hashlog_purge_all();
+			pthread_mutex_unlock(&stats_lock);
+		}
+
+		opt_algo = (enum sha_algos) p->algo;
+	}
+
 	if (prevn != cur_pooln) {
 
 		pool_switch_count++;
+		net_diff = 0;
 		g_work_time = 0;
 		g_work.data[0] = 0;
 		pool_is_switching = true;
@@ -360,6 +384,7 @@ bool parse_pool_array(json_t *obj)
 void pool_dump_infos()
 {
 	struct pool_infos *p;
+	if (opt_benchmark) return;
 	for (int i=0; i<num_pools; i++) {
 		p = &pools[i];
 		applog(LOG_DEBUG, "POOL %01d: %s USER %s -s %d", i,

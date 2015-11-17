@@ -176,9 +176,11 @@ void cuda_reset_device(int thr_id, bool *init)
 	}
 	cudaDeviceReset();
 	if (opt_cudaschedule >= 0) {
-		cudaSetDevice(dev_id);
 		cudaSetDeviceFlags((unsigned)(opt_cudaschedule & cudaDeviceScheduleMask));
+	} else {
+		cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync);
 	}
+	cudaDeviceSynchronize();
 }
 
 // return free memory in megabytes
@@ -197,6 +199,12 @@ void cuda_log_lasterror(int thr_id, const char* func, int line)
 	cudaError_t err = cudaGetLastError();
 	if (err != cudaSuccess && !opt_quiet)
 		gpulog(LOG_WARNING, thr_id, "%s:%d %s", func, line, cudaGetErrorString(err));
+}
+
+// Clear any cuda error in non-cuda unit (.c/.cpp)
+void cuda_clear_lasterror()
+{
+	cudaGetLastError();
 }
 
 #ifdef __cplusplus
@@ -221,6 +229,8 @@ typedef struct { double value[8]; } tsumarray;
 cudaError_t MyStreamSynchronize(cudaStream_t stream, int situation, int thr_id)
 {
 	cudaError_t result = cudaSuccess;
+	if (abort_flag)
+		return result;
 	if (situation >= 0)
 	{
 		static std::map<int, tsumarray> tsum;

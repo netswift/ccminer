@@ -988,7 +988,7 @@ char *stratum_recv_line(struct stratum_ctx *sctx)
 		} while (time(NULL) - rstart < timeout && !strstr(sctx->sockbuf, "\n"));
 
 		if (!ret) {
-			applog(LOG_ERR, "stratum_recv_line failed");
+			if (opt_debug) applog(LOG_ERR, "stratum_recv_line failed");
 			goto out;
 		}
 	}
@@ -1852,7 +1852,6 @@ void do_gpu_tests(void)
 #ifdef _DEBUG
 	unsigned long done;
 	char s[128] = { '\0' };
-	uchar buf[160];
 	struct work work;
 	memset(&work, 0, sizeof(work));
 
@@ -1866,7 +1865,7 @@ void do_gpu_tests(void)
 	//scanhash_scrypt_jane(0, &work, NULL, 1, &done, &tv, &tv);
 
 	memset(work.data, 0, sizeof(work.data));
-	scanhash_lyra2(0, &work, 1, &done);
+	scanhash_quark(0, &work, 1, &done);
 
 	free(work_restart);
 	work_restart = NULL;

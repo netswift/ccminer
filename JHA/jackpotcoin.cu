@@ -9,6 +9,7 @@ extern "C"
 
 #include "miner.h"
 #include "cuda_helper.h"
+#include "quark/cuda_quark.h"
 
 static uint32_t *d_hash[MAX_GPUS] = { 0 };
 
@@ -21,20 +22,6 @@ static uint32_t *d_branch3Nonces[MAX_GPUS] = { 0 };
 extern void jackpot_keccak512_cpu_init(int thr_id, uint32_t threads);
 extern void jackpot_keccak512_cpu_setBlock(void *pdata, size_t inlen);
 extern void jackpot_keccak512_cpu_hash(int thr_id, uint32_t threads, uint32_t startNounce, uint32_t *d_hash, int order);
-
-extern void quark_blake512_cpu_init(int thr_id, uint32_t threads);
-extern void quark_blake512_cpu_free(int thr_id);
-extern void quark_blake512_cpu_hash_64(int thr_id, uint32_t threads, uint32_t startNounce, uint32_t *d_nonceVector, uint32_t *d_hash, int order);
-
-extern void quark_groestl512_cpu_init(int thr_id, uint32_t threads);
-extern void quark_groestl512_cpu_hash_64(int thr_id, uint32_t threads, uint32_t startNounce, uint32_t *d_nonceVector, uint32_t *d_hash, int order);
-extern void quark_groestl512_cpu_free(int thr_id);
-
-extern void quark_jh512_cpu_init(int thr_id, uint32_t threads);
-extern void quark_jh512_cpu_hash_64(int thr_id, uint32_t threads, uint32_t startNounce, uint32_t *d_nonceVector, uint32_t *d_hash, int order);
-
-extern void quark_skein512_cpu_init(int thr_id, uint32_t threads);
-extern void quark_skein512_cpu_hash_64(int thr_id, uint32_t threads, uint32_t startNounce, uint32_t *d_nonceVector, uint32_t *d_hash, int order);
 
 extern void jackpot_compactTest_cpu_init(int thr_id, uint32_t threads);
 extern void jackpot_compactTest_cpu_free(int thr_id);
@@ -102,7 +89,7 @@ extern "C" int scanhash_jackpot(int thr_id, struct work *work, uint32_t max_nonc
 	if (init[thr_id]) throughput = min(throughput, max_nonce - first_nonce);
 
 	if (opt_benchmark)
-		((uint32_t*)ptarget)[7] = 0x000f;
+		ptarget[7] = 0x000f;
 
 	if (!init[thr_id])
 	{
@@ -112,7 +99,6 @@ extern "C" int scanhash_jackpot(int thr_id, struct work *work, uint32_t max_nonc
 			gpulog(LOG_ERR, thr_id, "Sorry, This algo is not supported by this GPU arch (SM 3.0 required)");
 			proper_exit(EXIT_CODE_CUDA_ERROR);
 		}
-
 
 		CUDA_SAFE_CALL(cudaMalloc(&d_hash[thr_id], (size_t) 64 * throughput));
 
@@ -252,15 +238,16 @@ extern "C" int scanhash_jackpot(int thr_id, struct work *work, uint32_t max_nonc
 			}
 		}
 
-		if ((uint64_t) pdata[19] + throughput > max_nonce) {
-			*hashes_done = pdata[19] - first_nonce;
+		if ((uint64_t) throughput + pdata[19] >= max_nonce) {
 			pdata[19] = max_nonce;
-			return 0;
+			break;
 		}
 
 		pdata[19] += throughput;
 
 	} while (!work_restart[thr_id].restart);
+
+	*hashes_done = pdata[19] - first_nonce;
 
 	CUDA_LOG_ERROR();
 

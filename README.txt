@@ -1,5 +1,5 @@
 
-ccMiner release 1.6.6 (Aug 2015)   "Lyra2REv2, BMW And Vanilla"
+ccMiner release 1.7.0 (Nov 2015) "Mining Diff & basic MultiAlgo"
 ---------------------------------------------------------------
 
 ***************************************************************
@@ -164,6 +164,9 @@ Scrypt specific options:
   -L, --lookup-gap      Divides the per-hash memory requirement by this factor
                         by storing only every N'th value in the scratchpad.
                         Default is 1.
+      --texture-cache   comma separated list of flags (0/1/2) specifying
+                        which of the CUDA devices shall use the texture
+                        cache for mining. Kepler devices may profit.
       --no-autotune     disable auto-tuning of kernel launch parameters
 
 
@@ -228,11 +231,13 @@ features.
 
 >>> RELEASE HISTORY <<<
 
-  Under Dev...    v1.7
+  Nov. 06th 2015  v1.7
+                  Improve old devices compatibility (x11, lyra2v2, quark, qubit...)
                   Add windows support for SM 2.1 and drop SM 3.5 (x86)
-                  Improve lyra2 (v1/v2) cuda implementation
+                  Improve lyra2 (v1/v2) cuda implementations
+                  Improve most common algos on SM5+ with sp blake kernel
                   Restore whirlpool algo (and whirlcoin variant)
-                  Prepare algo switch ability
+                  Prepare algo/pool switch ability, trivial method
                   Add --benchmark alone to run a benchmark for all algos
                   Add --cuda-schedule parameter
                   Add --show-diff parameter, which display shares diff,

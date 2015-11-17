@@ -149,6 +149,7 @@ struct pool_infos pools[MAX_POOLS] = { 0 };
 int num_pools = 1;
 volatile int cur_pooln = 0;
 bool opt_pool_failover = true;
+volatile bool pool_on_hold = false;
 volatile bool pool_is_switching = false;
 volatile int pool_switch_count = 0;
 bool conditional_pool_rotate = false;
@@ -166,7 +167,7 @@ pthread_mutex_t stratum_work_lock;
 char *opt_cert;
 char *opt_proxy;
 long opt_proxy_type;
-struct thr_info *thr_info;
+struct thr_info *thr_info = NULL;
 static int work_thr_id;
 struct thr_api *thr_api;
 int longpoll_thr_id = -1;
@@ -178,7 +179,7 @@ struct work_restart *work_restart = NULL;
 static int app_exit_code = EXIT_CODE_OK;
 
 pthread_mutex_t applog_lock;
-static pthread_mutex_t stats_lock;
+pthread_mutex_t stats_lock;
 double thr_hashrates[MAX_GPUS] = { 0 };
 uint64_t global_hashrate = 0;
 double   stratum_diff = 0.0;
@@ -332,18 +333,20 @@ struct option options[] = {
 	{ "no-stratum", 0, NULL, 1007 },
 	{ "no-autotune", 0, NULL, 1004 },  // scrypt
 	{ "interactive", 1, NULL, 1050 },  // scrypt
-	{ "launch-config", 0, NULL, 'l' }, // scrypt
-	{ "lookup-gap", 0, NULL, 'L' },    // scrypt
+	{ "launch-config", 1, NULL, 'l' }, // scrypt
+	{ "lookup-gap", 1, NULL, 'L' },    // scrypt
+	{ "texture-cache", 1, NULL, 1051 },// scrypt
 	{ "max-temp", 1, NULL, 1060 },
 	{ "max-diff", 1, NULL, 1061 },
 	{ "max-rate", 1, NULL, 1062 },
 	{ "pass", 1, NULL, 'p' },
 	{ "pool-name", 1, NULL, 1100 },     // pool
-	{ "pool-removed", 1, NULL, 1101 },  // pool
+	{ "pool-algo", 1, NULL, 1101 },     // pool
 	{ "pool-scantime", 1, NULL, 1102 }, // pool
 	{ "pool-time-limit", 1, NULL, 1108 },
 	{ "pool-max-diff", 1, NULL, 1161 }, // pool
 	{ "pool-max-rate", 1, NULL, 1162 }, // pool
+	{ "pool-disabled", 1, NULL, 1199 }, // pool
 	{ "protocol-dump", 0, NULL, 'P' },
 	{ "proxy", 1, NULL, 'x' },
 	{ "quiet", 0, NULL, 'q' },
@@ -387,6 +390,9 @@ Scrypt specific options:\n\
       --interactive     comma separated list of flags (0/1) specifying\n\
                         which of the CUDA device you need to run at inter-\n\
                         active frame rates (because it drives a display).\n\
+      --texture-cache   comma separated list of flags (0/1/2) specifying\n\
+                        which of the CUDA devices shall use the texture\n\
+                        cache for mining. Kepler devices may profit.\n\
       --no-autotune     disable auto-tuning of kernel launch parameters\n\
 ";
 
@@ -467,6 +473,7 @@ void get_currentalgo(char* buf, int sz)
  */
 void proper_exit(int reason)
 {
+	restart_threads();
 	if (abort_flag) /* already called */
 		return;
 
@@ -478,9 +485,11 @@ void proper_exit(int reason)
 		reason = app_exit_code;
 	}
 
+	pthread_mutex_lock(&stats_lock);
 	if (check_dups)
 		hashlog_purge_all();
 	stats_purge_all();
+	pthread_mutex_unlock(&stats_lock);
 
 #ifdef WIN32
 	timeEndPeriod(1); // else never executed
@@ -495,7 +504,7 @@ void proper_exit(int reason)
 #endif
 	free(opt_syslog_pfx);
 	free(opt_api_allow);
-	free(work_restart);
+	//free(work_restart);
 	//free(thr_info);
 	exit(reason);
 }
@@ -1630,6 +1639,11 @@ static void *miner_thread(void *userdata)
 		/* conditional mining */
 		if (!wanna_mine(thr_id)) {
 
+			// free gpu resources
+			algo_free_all(thr_id);
+			// clear any free error (algo switch)
+			cuda_clear_lasterror();
+
 			// conditional pool switch
 			if (num_pools > 1 && conditional_pool_rotate) {
 				if (!pool_is_switching)
@@ -1644,10 +1658,13 @@ static void *miner_thread(void *userdata)
 				continue;
 			}
 
+			pool_on_hold = true;
+			global_hashrate = 0;
 			sleep(5);
 			if (!thr_id) pools[cur_pooln].wait_time += 5;
 			continue;
 		}
+		pool_on_hold = false;
 
 		work_restart[thr_id].restart = 0;
 
@@ -1705,18 +1722,22 @@ static void *miner_thread(void *userdata)
 		if (max64 < minmax) {
 			switch (opt_algo) {
 			case ALGO_BLAKECOIN:
-			case ALGO_BLAKE:
-			case ALGO_WHIRLPOOLX:
 				minmax = 0x80000000U;
 				break;
+			case ALGO_BLAKE:
 			case ALGO_BMW:
+			case ALGO_WHIRLPOOLX:
 				minmax = 0x40000000U;
 				break;
+			case ALGO_KECCAK:
 			case ALGO_LUFFA:
-				minmax = 0x2000000;
+			case ALGO_SKEIN:
+			case ALGO_SKEIN2:
+				minmax = 0x1000000;
 				break;
 			case ALGO_C11:
 			case ALGO_DEEP:
+			case ALGO_HEAVY:
 			case ALGO_LYRA2v2:
 			case ALGO_S3:
 			case ALGO_X11:
@@ -1725,7 +1746,6 @@ static void *miner_thread(void *userdata)
 			case ALGO_WHIRLPOOL:
 				minmax = 0x400000;
 				break;
-			case ALGO_KECCAK:
 			case ALGO_JACKPOT:
 			case ALGO_X14:
 			case ALGO_X15:
@@ -1944,6 +1964,9 @@ static void *miner_thread(void *userdata)
 				// to debug nonce ranges
 				gpulog(LOG_DEBUG, thr_id, "ends=%08x range=%08x", nonceptr[0], (nonceptr[0] - start_nonce));
 			}
+			// prevent low scan ranges on next loop on fast algos (blake)
+			if (nonceptr[0] > UINT32_MAX - 64)
+				nonceptr[0] = UINT32_MAX;
 		}
 
 		if (check_dups)
@@ -2294,7 +2317,8 @@ wait_stratum_url:
 
 		if (!s) {
 			stratum_disconnect(&stratum);
-			applog(LOG_WARNING, "Stratum connection interrupted");
+			if (!opt_quiet && !pool_on_hold)
+				applog(LOG_WARNING, "Stratum connection interrupted");
 			continue;
 		}
 		if (!stratum_handle_method(&stratum, s))
@@ -2655,6 +2679,18 @@ void parse_arg(int key, char *arg)
 				device_interactive[n++] = last;
 		}
 		break;
+	case 1051: /* scrypt --texture-cache */
+		{
+			char *pch = strtok(arg,",");
+			int n = 0, last = atoi(arg);
+			while (pch != NULL) {
+				device_texturecache[n++] = last = atoi(pch);
+				pch = strtok(NULL, ",");
+			}
+			while (n < MAX_GPUS)
+				device_texturecache[n++] = last;
+		}
+		break;
 	case 1070: /* --gpu-clock */
 		{
 			char *pch = strtok(arg,",");
@@ -2774,12 +2810,13 @@ void parse_arg(int key, char *arg)
 		if (p) d *= 1e9;
 		opt_max_rate = d;
 		break;
-	case 'd': // CB
+	case 'd': // --device
 		{
+			int device_thr[MAX_GPUS] = { 0 };
 			int ngpus = cuda_num_devices();
 			char * pch = strtok (arg,",");
 			opt_n_threads = 0;
-			while (pch != NULL) {
+			while (pch != NULL && opt_n_threads < MAX_GPUS) {
 				if (pch[0] >= '0' && pch[0] <= '9' && pch[1] == '\0')
 				{
 					if (atoi(pch) < ngpus)
@@ -2798,6 +2835,14 @@ void parse_arg(int key, char *arg)
 					}
 				}
 				pch = strtok (NULL, ",");
+			}
+			// count threads per gpu
+			for (int n=0; n < opt_n_threads; n++) {
+				int device = device_map[n];
+				device_thr[device]++;
+			}
+			for (int n=0; n < ngpus; n++) {
+				gpu_threads = max(gpu_threads, device_thr[n]);
 			}
 		}
 		break;
@@ -2820,8 +2865,8 @@ void parse_arg(int key, char *arg)
 	case 1100: /* pool name */
 		pool_set_attr(cur_pooln, "name", arg);
 		break;
-	case 1101: /* pool removed */
-		pool_set_attr(cur_pooln, "removed", arg);
+	case 1101: /* pool algo */
+		pool_set_attr(cur_pooln, "algo", arg);
 		break;
 	case 1102: /* pool scantime */
 		pool_set_attr(cur_pooln, "scantime", arg);
@@ -2834,6 +2879,9 @@ void parse_arg(int key, char *arg)
 		break;
 	case 1162: /* pool max-rate */
 		pool_set_attr(cur_pooln, "max-rate", arg);
+		break;
+	case 1199:
+		pool_set_attr(cur_pooln, "disabled", arg);
 		break;
 
 	case 'V':
@@ -2995,10 +3043,13 @@ int main(int argc, char *argv[])
 	rpc_user = strdup("");
 	rpc_pass = strdup("");
 	rpc_url = strdup("");
-
 	jane_params = strdup("");
 
 	pthread_mutex_init(&applog_lock, NULL);
+	pthread_mutex_init(&stratum_sock_lock, NULL);
+	pthread_mutex_init(&stratum_work_lock, NULL);
+	pthread_mutex_init(&stats_lock, NULL);
+	pthread_mutex_init(&g_work_lock, NULL);
 
 	// number of cpus for thread affinity
 #if defined(WIN32)
@@ -3067,11 +3118,6 @@ int main(int argc, char *argv[])
 
 	/* init stratum data.. */
 	memset(&stratum.url, 0, sizeof(stratum));
-	pthread_mutex_init(&stratum_sock_lock, NULL);
-	pthread_mutex_init(&stratum_work_lock, NULL);
-
-	pthread_mutex_init(&stats_lock, NULL);
-	pthread_mutex_init(&g_work_lock, NULL);
 
 	// ensure default params are set
 	pool_init_defaults();
@@ -3155,8 +3201,8 @@ int main(int argc, char *argv[])
 	else if (active_gpus > opt_n_threads)
 		active_gpus = opt_n_threads;
 
-	// generally doesn't work... let 1
-	gpu_threads = opt_n_threads / active_gpus;
+	// generally doesn't work well...
+	gpu_threads = max(gpu_threads, opt_n_threads / active_gpus);
 
 	if (opt_benchmark && opt_algo == ALGO_AUTO) {
 		bench_init(opt_n_threads);
